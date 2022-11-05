@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Practical Property Testing</title>
+  <meta name="description" content="Hypothesis is a property-based testing framework.  This meansthat it will generate test cases for you as long as you tell it what kind ofdata to generate, an...">
+
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="canonical" href="http://blog.conradpdean.com/2016/07/13/practical-property-testing.html">
+  <link rel="alternate" type="application/rss+xml" title="Conrad Dean" href="http://blog.conradpdean.com/feed.xml">
+
+  
+  <!--Google Analytics-->
+  <script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+        (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+          })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-23627863-2', 'auto');
+    ga('send', 'pageview');
+  </script>
+  <!--/Google Analytics-->
+  
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Conrad Dean</a>
+
+    <nav class="site-nav">
+      <a href="#" class="menu-icon">
+        <svg viewBox="0 0 18 15">
+          <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+          <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+          <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+        </svg>
+      </a>
+
+      <div class="trigger">
+        
+          
+        
+          
+          <a class="page-link" href="/about/">About</a>
+          
+        
+          
+        
+          
+        
+          
+        
+      </div>
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <div class="page-content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title" itemprop="name headline">Practical Property Testing</h1>
+    <p class="post-meta"><time datetime="2016-07-13T22:26:13-04:00" itemprop="datePublished">Jul 13, 2016</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p><a href="http://hypothesis.readthedocs.io/en/latest/quickstart.html">Hypothesis</a> is a property-based testing framework.  This means
+that it will generate test cases for you as long as you tell it what kind of
+data to generate, and you write tests that can generalize solutions against
+novel data.  But how do you get started with a tool like this?</p>
+
+<p>How to come up with your own properties is a challenge, but there are a few patterns that are immediately useful in the software that people work on in the real world.  I learned about these patterns from Matt Bachmann’s <a href="https://youtu.be/jvwfDdgg93E">Pycon 2016 talk</a>.</p>
+
+<p>The term “property” comes from Math.  For example, we say that a list-sorting
+function has the property of idempotence.  That means that if you run the
+function many times, it won’t have any different outcomes from just running it
+once.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">test_my_sort</span><span class="p">():</span>
+    <span class="n">a</span> <span class="o">=</span> <span class="n">random_list</span><span class="p">()</span>
+    <span class="k">assert</span> <span class="n">my_sort</span><span class="p">(</span><span class="n">a</span><span class="p">)</span> <span class="o">==</span> <span class="n">my_sort</span><span class="p">(</span><span class="n">my_sort</span><span class="p">(</span><span class="n">a</span><span class="p">))</span>
+    <span class="k">assert</span> <span class="n">my_sort</span><span class="p">(</span><span class="n">a</span><span class="p">)</span> <span class="o">==</span> <span class="n">my_sort</span><span class="p">(</span><span class="n">my_sort</span><span class="p">(</span><span class="n">my_sort</span><span class="p">(</span><span class="n">a</span><span class="p">)))</span>
+    <span class="k">assert</span> <span class="n">my_sort</span><span class="p">(</span><span class="n">a</span><span class="p">)</span> <span class="o">==</span> <span class="n">my_sort</span><span class="p">(</span><span class="n">my_sort</span><span class="p">(</span><span class="n">my_sort</span><span class="p">(</span><span class="n">my_sort</span><span class="p">(</span><span class="n">a</span><span class="p">))))</span>
+</code></pre></div></div>
+
+<p>This is an awfully academic way to think about your code, and you shouldn’t be
+surprised by that.  Hypothesis is based off another project: QuickCheck,  from
+Haskell.</p>
+
+<p>Just because their premise is based on abstract mathematical properties doesn’t
+mean you need to understand how to write a formal proof about your code.
+Coming up with your own tests is easy.  Instead of coming up with specific test
+cases with hard-coded input and output data, you come up with a test that
+describes the general shape of the behavior of your code.  When you do that,
+the property-test framework can generate data for you and use your test to
+verify that your code is doing what it should be.  When you describe <strong>how</strong>
+the output should be, rather than <strong>what</strong> it should be, your test will work on
+data you haven’t thought of before!</p>
+
+<p>Still, property tests are far more challenging to write than unit tests.  The
+properties that you implement during testing are not the same properties that
+come up during feature requests from users – nobody is asking for you to make
+sure your implementation of quick-sort is idempotent! But there are a few
+properties that are immediately useful to you to start using Hypothesis in your
+codebase right away.</p>
+
+<h2 id="oracle-based-property">Oracle-based property</h2>
+
+<p>Something that all property tests have in common is it asserts some kind of
+behavior about your code.  Often the property test only describe one aspect
+about the behavior of what’s being tested, but this pattern asserts everything about what data it should return at once.</p>
+
+<p>Say you have a function that’s too slow, or written poorly, or you want to
+write it in a different language.  Before embarking on a complete rewrite, it’s
+important to have a bunch of tests around that function to make sure that you
+don’t accidentally make a mistake and change its behavior from what it should
+do.  Writing out all those tests is time consuming, why not just have
+Hypothesis test it for you?</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="nn">hypothesis</span> <span class="kn">import</span> <span class="n">given</span>
+<span class="kn">import</span> <span class="nn">hypothesis.strategies</span> <span class="k">as</span> <span class="n">st</span>
+
+<span class="kn">from</span> <span class="nn">project.legacy</span> <span class="kn">import</span> <span class="n">fix_data</span> <span class="k">as</span> <span class="n">old_fix_data</span>
+<span class="kn">from</span> <span class="nn">project</span> <span class="kn">import</span> <span class="n">fix_data</span>
+
+<span class="o">@</span><span class="n">given</span><span class="p">(</span><span class="n">st</span><span class="p">.</span><span class="n">integers</span><span class="p">())</span>
+<span class="k">def</span> <span class="nf">test_new_data_fixer</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
+    <span class="k">assert</span> <span class="n">fix_data</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="o">==</span> <span class="n">old_fix_data</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>Hypothesis will generate random integers and check to make sure the new
+implementation fixes the data correctly.  This is a cheap and easy way to
+verify your implementation across many test cases.  While it helps to have a
+few pointed edge cases that make sense in your problem domain, having a
+computer generate thousands of test cases for you may uncover differences in
+the rewrite that could have been bugs in the legacy code to begin with!  It’s
+like having users that always reports concrete ways to reproduce a bug.</p>
+
+<h2 id="reversible-operations">Reversible Operations</h2>
+
+<p>You get a property test for free whenever you have two functions that are
+supposed to undo each other.  Serialization and deserialization of data is a
+common function where this happens:</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="nn">hypothesis</span> <span class="kn">import</span> <span class="n">given</span>
+<span class="kn">import</span> <span class="nn">hypothesis.strategies</span> <span class="k">as</span> <span class="n">st</span>
+<span class="n">json_data</span> <span class="o">=</span> <span class="n">st</span><span class="p">.</span><span class="n">recursive</span><span class="p">(</span>
+    <span class="n">st</span><span class="p">.</span><span class="n">integers</span><span class="p">()</span> <span class="o">|</span> <span class="n">st</span><span class="p">.</span><span class="n">booleans</span><span class="p">()</span> <span class="o">|</span> <span class="n">st</span><span class="p">.</span><span class="n">text</span><span class="p">()</span> <span class="o">|</span> <span class="n">st</span><span class="p">.</span><span class="n">none</span><span class="p">(),</span>
+    <span class="k">lambda</span> <span class="n">children</span><span class="p">:</span> <span class="n">st</span><span class="p">.</span><span class="n">lists</span><span class="p">(</span><span class="n">children</span><span class="p">)</span> <span class="o">|</span> <span class="n">st</span><span class="p">.</span><span class="n">dictionaries</span><span class="p">(</span><span class="n">st</span><span class="p">.</span><span class="n">text</span><span class="p">(),</span> <span class="n">children</span><span class="p">)</span>
+<span class="p">)</span>
+<span class="kn">import</span> <span class="nn">json</span>
+
+<span class="o">@</span><span class="n">given</span><span class="p">(</span><span class="n">json_data</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">test_json_serialization</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+    <span class="k">assert</span> <span class="n">data</span> <span class="o">==</span> <span class="n">json</span><span class="p">.</span><span class="n">loads</span><span class="p">(</span><span class="n">json</span><span class="p">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+</code></pre></div></div>
+
+<p>This asserts that serializing data back and forth from json works correctly.
+Notice that we aren’t specifying any specific test case of data because we
+shouldn’t have to. <code class="language-plaintext highlighter-rouge">json.loads</code> and <code class="language-plaintext highlighter-rouge">json.dumps</code> are supposed to reverse what
+each other do by definition, so it makes sense that we should be able to use
+any sort of data that’s allowed to be stored as JSON.</p>
+
+<p>This generator is making use of the <code class="language-plaintext highlighter-rouge">recursive</code> strategy from hypothesis to
+generate nested data.  I pulled the example from the <a href="http://hypothesis.readthedocs.io/en/latest/data.html#recursive-data">hypothesis
+documentation</a>.</p>
+
+<p>Note that the documentation uses <code class="language-plaintext highlighter-rouge">st.floats()</code> where I’m using <code class="language-plaintext highlighter-rouge">st.integers()</code>.
+This is because the float <code class="language-plaintext highlighter-rouge">nan</code> serializes back to the string <code class="language-plaintext highlighter-rouge">"NaN"</code>, which
+hypothesis points out as an error.  Maybe this highlights a problem with the
+JSON spec, or with python’s standard library json module.  Either way, outside
+the scope of what I want to talk about right now.</p>
+
+<h2 id="fuzzing-for-failure">Fuzzing for Failure</h2>
+
+<p>A common property of software that you usually want to have is that it doesn’t
+crash.  It’s surprising how rare a property this is.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="nn">datetime</span>
+
+
+<span class="o">@</span><span class="n">h</span><span class="p">.</span><span class="n">given</span><span class="p">(</span><span class="n">st</span><span class="p">.</span><span class="n">integers</span><span class="p">())</span>
+<span class="k">def</span> <span class="nf">test_epoch_to_datetime</span><span class="p">(</span><span class="n">ts</span><span class="p">):</span>
+    <span class="n">datetime</span><span class="p">.</span><span class="n">datetime</span><span class="p">.</span><span class="n">fromtimestamp</span><span class="p">(</span><span class="n">ts</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>This is testing a function that takes the number of seconds since January 1st,
+1970 and returns a datetime object for that point in time.  This test isn’t
+asserting anything about the behavior of this function at all, it’s not even
+looking at the datetime that it returns.  Why even bother? However when we run
+our test:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>============================ FAILURES =============================
+_____________________ test_epoch_to_datetime ______________________
+
+    @h.given(st.integers())
+&gt;   def test_epoch_to_datetime(ts):
+
+tests/test_thing.py:104:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.tox/py3/lib/python2.7/site-packages/hypothesis/core.py:520: in wrapped_test
+    print_example=True, is_final=True
+.tox/py3/lib/python2.7/site-packages/hypothesis/executors.py:58: in default_new_style_executor
+    return function(data)
+.tox/py3/lib/python2.7/site-packages/hypothesis/core.py:110: in run
+    return test(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+ts = 253402318800
+
+    @h.given(st.integers())
+    def test_epoch_to_datetime(ts):
+&gt;       datetime.datetime.fromtimestamp(ts)
+E       ValueError: year is out of range
+
+tests/test_thing.py:105: ValueError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_epoch_to_datetime(ts=253402318800)
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">fromtimestamp</code> is crashing! Why is there a number that this would crash on? Looking at the <a href="https://docs.python.org/2/library/datetime.html#datetime.date.fromtimestamp">documentation</a> for this function:</p>
+
+<blockquote>
+  <p>… This may raise ValueError, if the timestamp is out of the range of values supported by the platform C localtime() function. It’s common for this to be restricted to years from 1970 through 2038. …</p>
+</blockquote>
+
+<p>So what year does this integer represent?</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Python 3.4.3 (default, Aug 11 2015, 08:53:29)
+[GCC 4.2.1 Compatible Apple LLVM 6.0 (clang-600.0.57)] on darwin
+Type "help", "copyright", "credits" or "license" for more information.
+&gt;&gt;&gt; ts = 253402318800
+&gt;&gt;&gt; (ts
+... / 60 # seconds in a minute
+... / 60 # minutes in an hour
+... / 24 # hours in a day
+... / 365 # days a year
+... ) + 1970 # since epoch year
+10005.334817351599
+</code></pre></div></div>
+
+<p>Ah.  Yeah that’s a bit over 2038.  But the documentation says “it’s common for
+this to be restricted…”  meaning it will be different depending on what the
+platform supports.  Depending on the kind of software you’re writing and
+deploying, it would make sense to test for this on every platform you support.
+Do you know all instances where your codebase calls <code class="language-plaintext highlighter-rouge">datetime.fromtimestamp</code>?
+Do you know all instances where the libraries you use call
+<code class="language-plaintext highlighter-rouge">datetime.fromtimestamp</code>?</p>
+
+<p>Fuzzing your components for failure can uncover all sorts of unexpected errors
+like this without much effort on your part.  You don’t have to know where you
+use functions that have arbitrary limits like this.  Just let the computer
+search for them and save you the trouble.</p>
+
+<h2 id="start-using-property-tests-now">Start Using Property Tests Now</h2>
+
+<p><a href="http://hypothesis.readthedocs.io/en/latest/quickstart.html">Hypothesis</a> supports <code class="language-plaintext highlighter-rouge">pytest</code> and <code class="language-plaintext highlighter-rouge">unittest</code> already, and using
+some of the patterns above it’s easy to begin incorporating property tests into
+your project right away.  The more familiar you’ll get with how to apply these
+basic patterns, the sooner you’ll learn how to come up with novel patterns on
+your own code.</p>
+
+
+  </div>
+
+</article>
+
+      </div>
+    </div>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Conrad Dean</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <p>Software Engineer in New York City
+</p>
+      </div>
+
+      <div class="footer-col footer-col-2">
+        <ul class="social-media-list">
+          
+          <li>
+              <! -- hack to make links line up -->
+              <a href="https://www.linkedin.com/in/cpdean"><span class="icon icon--twitter" style="display:inline-block; width:20px;"></span><span class="username">LinkedIn</span></a>
+          </li>
+          
+          
+          <li>
+            <a href="https://github.com/cpdean"><span class="icon icon--github"><svg viewBox="0 0 16 16"><path fill="#828282" d="M7.999,0.431c-4.285,0-7.76,3.474-7.76,7.761 c0,3.428,2.223,6.337,5.307,7.363c0.388,0.071,0.53-0.168,0.53-0.374c0-0.184-0.007-0.672-0.01-1.32 c-2.159,0.469-2.614-1.04-2.614-1.04c-0.353-0.896-0.862-1.135-0.862-1.135c-0.705-0.481,0.053-0.472,0.053-0.472 c0.779,0.055,1.189,0.8,1.189,0.8c0.692,1.186,1.816,0.843,2.258,0.645c0.071-0.502,0.271-0.843,0.493-1.037 C4.86,11.425,3.049,10.76,3.049,7.786c0-0.847,0.302-1.54,0.799-2.082C3.768,5.507,3.501,4.718,3.924,3.65 c0,0,0.652-0.209,2.134,0.796C6.677,4.273,7.34,4.187,8,4.184c0.659,0.003,1.323,0.089,1.943,0.261 c1.482-1.004,2.132-0.796,2.132-0.796c0.423,1.068,0.157,1.857,0.077,2.054c0.497,0.542,0.798,1.235,0.798,2.082 c0,2.981-1.814,3.637-3.543,3.829c0.279,0.24,0.527,0.713,0.527,1.437c0,1.037-0.01,1.874-0.01,2.129 c0,0.208,0.14,0.449,0.534,0.373c3.081-1.028,5.302-3.935,5.302-7.362C15.76,3.906,12.285,0.431,7.999,0.431z"/></svg>
+</span><span class="username">cpdean</span></a>
+
+          </li>
+          
+
+          
+          <li>
+            <a href="https://twitter.com/deanc"><span class="icon icon--twitter"><svg viewBox="0 0 16 16"><path fill="#828282" d="M15.969,3.058c-0.586,0.26-1.217,0.436-1.878,0.515c0.675-0.405,1.194-1.045,1.438-1.809c-0.632,0.375-1.332,0.647-2.076,0.793c-0.596-0.636-1.446-1.033-2.387-1.033c-1.806,0-3.27,1.464-3.27,3.27 c0,0.256,0.029,0.506,0.085,0.745C5.163,5.404,2.753,4.102,1.14,2.124C0.859,2.607,0.698,3.168,0.698,3.767 c0,1.134,0.577,2.135,1.455,2.722C1.616,6.472,1.112,6.325,0.671,6.08c0,0.014,0,0.027,0,0.041c0,1.584,1.127,2.906,2.623,3.206 C3.02,9.402,2.731,9.442,2.433,9.442c-0.211,0-0.416-0.021-0.615-0.059c0.416,1.299,1.624,2.245,3.055,2.271 c-1.119,0.877-2.529,1.4-4.061,1.4c-0.264,0-0.524-0.015-0.78-0.046c1.447,0.928,3.166,1.469,5.013,1.469 c6.015,0,9.304-4.983,9.304-9.304c0-0.142-0.003-0.283-0.009-0.423C14.976,4.29,15.531,3.714,15.969,3.058z"/></svg>
+</span><span class="username">deanc</span></a>
+
+          </li>
+          
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-3">
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>

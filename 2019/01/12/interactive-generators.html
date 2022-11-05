@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Interactive Generators in Python</title>
+  <meta name="description" content="Python has a special primitive called a generator.  A generator is an iterablethat could be backed by a data structure, or some other form of deferredcomputa...">
+
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="canonical" href="http://blog.conradpdean.com/2019/01/12/interactive-generators.html">
+  <link rel="alternate" type="application/rss+xml" title="Conrad Dean" href="http://blog.conradpdean.com/feed.xml">
+
+  
+  <!--Google Analytics-->
+  <script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+        (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+          })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-23627863-2', 'auto');
+    ga('send', 'pageview');
+  </script>
+  <!--/Google Analytics-->
+  
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Conrad Dean</a>
+
+    <nav class="site-nav">
+      <a href="#" class="menu-icon">
+        <svg viewBox="0 0 18 15">
+          <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+          <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+          <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+        </svg>
+      </a>
+
+      <div class="trigger">
+        
+          
+        
+          
+          <a class="page-link" href="/about/">About</a>
+          
+        
+          
+        
+          
+        
+          
+        
+      </div>
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <div class="page-content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title" itemprop="name headline">Interactive Generators in Python</h1>
+    <p class="post-meta"><time datetime="2019-01-12T00:00:00-05:00" itemprop="datePublished">Jan 12, 2019</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p>Python has a special primitive called a generator.  A generator is an iterable
+that could be backed by a data structure, or some other form of deferred
+computation.  Python has a toolkit in the standard library called <code class="language-plaintext highlighter-rouge">itertools</code>
+that provides a set of high-level functions for producing and combining
+iterables in special ways.  This year’s Advent of Code day 16 problem involved
+multiplying a set of numbers by an sequence of numbers following a specific
+pattern:</p>
+
+<blockquote>
+  <ol>
+    <li>Start from a repeating pattern of [0, 1, 0, -1, …]</li>
+    <li>For the given digit you are calculating, repeat each element that many
+times. So for the first digit, use [0, 1, 0, -1, …], for the second digit
+use [0, 0, 1, 1, 0, 0, -1, -1, …], for the third, [0, 0, 0, 1, 1, 1, 0,
+0, 0, -1, -1, -1, …]</li>
+    <li>Shift the sequence by one by discarding the first element.  So the first
+pattern would start with [1, 0, 1, -1, …], the second with [0, 1, 1, 0,
+0, -1, -1, …] and so on.</li>
+  </ol>
+</blockquote>
+
+<p>In Python, you can use itertools to implement the above requirements fairly
+concisely:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>import itertools
+
+def base_pattern(i):
+    base = [0, 1, 0, -1]
+    expanded = itertools.chain.from_iterable([e] * i for e in base)
+    repeated = itertools.cycle(expanded)
+    first_skipped = itertools.islice(repeated, 1, None)
+    return first_skipped
+
+list(itertools.islice(base_pattern(1), 10))
+# [1, 0, -1, 0, 1, 0, -1, 0, 1, 0]
+list(itertools.islice(base_pattern(2), 10))
+# [0, 1, 1, 0, 0, -1, -1, 0, 0, 1]
+list(itertools.islice(base_pattern(3), 10))
+# [0, 0, 1, 1, 1, 0, 0, 0, -1, -1]
+</code></pre></div></div>
+
+<p>In Python, all the intermediate steps of composing our requirements in code take
+the form of generators.  To view the output of our <code class="language-plaintext highlighter-rouge">base_pattern(..)</code> results,
+we have to wrap it in a <code class="language-plaintext highlighter-rouge">list(itertools.islice(...))</code> in order to grab the first
+few elements of what is actually an infinitely-long sequence of elements.</p>
+
+<p>Occasionally, you need to write code that is more low-level than the high-level
+tools provided by <code class="language-plaintext highlighter-rouge">itertools</code> and generator-comprehension syntax. For this
+Python lets you specify a generator much in the same way you’d write a function,
+but instead of <code class="language-plaintext highlighter-rouge">return</code>‘ing your data, you <code class="language-plaintext highlighter-rouge">yield</code> it.</p>
+
+<p>Where a <code class="language-plaintext highlighter-rouge">return</code> statement in a function results in the code of the function
+halting and bailing out, a <code class="language-plaintext highlighter-rouge">yield</code> pauses the control flow in the code of a
+function, and will resume it when the generator needs to produce the next value
+in a sequence.</p>
+
+<p>Let’s convert the above high-level code into something more direct by writing
+the generator ourselves.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code># translate
+def base_pattern(i):
+    base = [0, 1, 0, -1]
+    expanded = itertools.chain.from_iterable([e] * i for e in base)
+    repeated = itertools.cycle(expanded)
+    first_skipped = itertools.islice(repeated, 1, None)
+    return first_skipped
+</code></pre></div></div>
+
+<p>Something else we can do with generators, is rely on an interactive API to
+create a body of code that responds to novel inputs.  Passing a generator to the
+<code class="language-plaintext highlighter-rouge">next(..)</code> built-in function is how we pull an element out of a generator, and
+calling the <code class="language-plaintext highlighter-rouge">.send(..)</code> method on a generator is how we pass an element to it,
+causing the deferred computation inside of it to change.</p>
+
+<p>Let’s begin by defining a small generator that just returns one element, and
+then use the Python interpreter to interact with it.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>def toy(n):
+    yield n
+</code></pre></div></div>
+
+<p>Instantiate the generator and try to pull things out of it</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>&gt;&gt;&gt; def toy(n):
+...     yield n
+...
+&gt;&gt;&gt; t = toy(3)
+&gt;&gt;&gt; t
+&lt;generator object toy at 0x7f3dad6badd0&gt;
+&gt;&gt;&gt; next(t)
+3
+&gt;&gt;&gt; next(t)
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+StopIteration
+&gt;&gt;&gt;
+</code></pre></div></div>
+
+<p>The <code class="language-plaintext highlighter-rouge">StopIteration</code> exception just means that the generator cannot advance
+forwards via the normal iterable API.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>
+&gt;&gt;&gt; def toy(n):
+...   while True:
+...     if n == 0:
+...        break
+...     for i in range(n):
+...       yield i
+...     n = yield
+...
+&gt;&gt;&gt; t = toy(2)
+&gt;&gt;&gt; next(t)
+0
+&gt;&gt;&gt; next(t)
+1
+&gt;&gt;&gt; next(t)
+&gt;&gt;&gt; next(t)
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+  File "&lt;stdin&gt;", line 5, in toy
+TypeError: 'NoneType' object cannot be interpreted as an integer
+&gt;&gt;&gt; next(t)
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+StopIteration
+&gt;&gt;&gt; next(t)
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+StopIteration
+&gt;&gt;&gt; t.send(3)
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+StopIteration
+</code></pre></div></div>
+
+<p>wow that’s interesting – it is possible to call next() on it again and break
+the little toy. maybe there is some way to make a command/control convention so
+that you can inspect if it is asking for a next value or not.</p>
+
+  </div>
+
+</article>
+
+      </div>
+    </div>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Conrad Dean</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <p>Software Engineer in New York City
+</p>
+      </div>
+
+      <div class="footer-col footer-col-2">
+        <ul class="social-media-list">
+          
+          <li>
+              <! -- hack to make links line up -->
+              <a href="https://www.linkedin.com/in/cpdean"><span class="icon icon--twitter" style="display:inline-block; width:20px;"></span><span class="username">LinkedIn</span></a>
+          </li>
+          
+          
+          <li>
+            <a href="https://github.com/cpdean"><span class="icon icon--github"><svg viewBox="0 0 16 16"><path fill="#828282" d="M7.999,0.431c-4.285,0-7.76,3.474-7.76,7.761 c0,3.428,2.223,6.337,5.307,7.363c0.388,0.071,0.53-0.168,0.53-0.374c0-0.184-0.007-0.672-0.01-1.32 c-2.159,0.469-2.614-1.04-2.614-1.04c-0.353-0.896-0.862-1.135-0.862-1.135c-0.705-0.481,0.053-0.472,0.053-0.472 c0.779,0.055,1.189,0.8,1.189,0.8c0.692,1.186,1.816,0.843,2.258,0.645c0.071-0.502,0.271-0.843,0.493-1.037 C4.86,11.425,3.049,10.76,3.049,7.786c0-0.847,0.302-1.54,0.799-2.082C3.768,5.507,3.501,4.718,3.924,3.65 c0,0,0.652-0.209,2.134,0.796C6.677,4.273,7.34,4.187,8,4.184c0.659,0.003,1.323,0.089,1.943,0.261 c1.482-1.004,2.132-0.796,2.132-0.796c0.423,1.068,0.157,1.857,0.077,2.054c0.497,0.542,0.798,1.235,0.798,2.082 c0,2.981-1.814,3.637-3.543,3.829c0.279,0.24,0.527,0.713,0.527,1.437c0,1.037-0.01,1.874-0.01,2.129 c0,0.208,0.14,0.449,0.534,0.373c3.081-1.028,5.302-3.935,5.302-7.362C15.76,3.906,12.285,0.431,7.999,0.431z"/></svg>
+</span><span class="username">cpdean</span></a>
+
+          </li>
+          
+
+          
+          <li>
+            <a href="https://twitter.com/deanc"><span class="icon icon--twitter"><svg viewBox="0 0 16 16"><path fill="#828282" d="M15.969,3.058c-0.586,0.26-1.217,0.436-1.878,0.515c0.675-0.405,1.194-1.045,1.438-1.809c-0.632,0.375-1.332,0.647-2.076,0.793c-0.596-0.636-1.446-1.033-2.387-1.033c-1.806,0-3.27,1.464-3.27,3.27 c0,0.256,0.029,0.506,0.085,0.745C5.163,5.404,2.753,4.102,1.14,2.124C0.859,2.607,0.698,3.168,0.698,3.767 c0,1.134,0.577,2.135,1.455,2.722C1.616,6.472,1.112,6.325,0.671,6.08c0,0.014,0,0.027,0,0.041c0,1.584,1.127,2.906,2.623,3.206 C3.02,9.402,2.731,9.442,2.433,9.442c-0.211,0-0.416-0.021-0.615-0.059c0.416,1.299,1.624,2.245,3.055,2.271 c-1.119,0.877-2.529,1.4-4.061,1.4c-0.264,0-0.524-0.015-0.78-0.046c1.447,0.928,3.166,1.469,5.013,1.469 c6.015,0,9.304-4.983,9.304-9.304c0-0.142-0.003-0.283-0.009-0.423C14.976,4.29,15.531,3.714,15.969,3.058z"/></svg>
+</span><span class="username">deanc</span></a>
+
+          </li>
+          
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-3">
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>

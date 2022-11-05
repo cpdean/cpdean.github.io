@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Default Arguments In Python: A Risky Gamble</title>
+  <meta name="description" content="Python lets you define what are called default arguments when defining afunction.  They look like this:">
+
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="canonical" href="http://blog.conradpdean.com/2018/10/05/default-arguments-risky-gamble.html">
+  <link rel="alternate" type="application/rss+xml" title="Conrad Dean" href="http://blog.conradpdean.com/feed.xml">
+
+  
+  <!--Google Analytics-->
+  <script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+        (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+          })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-23627863-2', 'auto');
+    ga('send', 'pageview');
+  </script>
+  <!--/Google Analytics-->
+  
+</head>
+
+
+  <body>
+
+    <header class="site-header">
+
+  <div class="wrapper">
+
+    <a class="site-title" href="/">Conrad Dean</a>
+
+    <nav class="site-nav">
+      <a href="#" class="menu-icon">
+        <svg viewBox="0 0 18 15">
+          <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+          <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+          <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+        </svg>
+      </a>
+
+      <div class="trigger">
+        
+          
+        
+          
+          <a class="page-link" href="/about/">About</a>
+          
+        
+          
+        
+          
+        
+          
+        
+      </div>
+    </nav>
+
+  </div>
+
+</header>
+
+
+    <div class="page-content">
+      <div class="wrapper">
+        <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title" itemprop="name headline">Default Arguments In Python: A Risky Gamble</h1>
+    <p class="post-meta"><time datetime="2018-10-05T00:00:00-04:00" itemprop="datePublished">Oct 5, 2018</time></p>
+  </header>
+
+  <div class="post-content" itemprop="articleBody">
+    <p>Python lets you define what are called <em>default arguments</em> when defining a
+function.  They look like this:</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">divide</span><span class="p">(</span><span class="n">numerator</span><span class="p">,</span> <span class="n">denominator</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">numerator</span> <span class="o">/</span> <span class="n">denominator</span>
+</code></pre></div></div>
+
+<p>Now you can divide numbers</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;&gt;</span> <span class="n">divide</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span>
+<span class="mi">2</span>
+<span class="o">&gt;&gt;&gt;</span> <span class="n">divide</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span>
+<span class="mi">10</span>
+<span class="o">&gt;&gt;&gt;</span> 
+</code></pre></div></div>
+
+<p>You can omit an argument, and python will use the default you’ve provided.
+Something that you can do which is subtly dangerous is to specify a default that
+is a mutable object, like so:</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;&gt;&gt;</span> <span class="k">def</span> <span class="nf">foo</span><span class="p">(</span><span class="n">thing</span><span class="o">=</span><span class="p">[]):</span>
+<span class="p">...</span>  <span class="k">print</span><span class="p">(</span><span class="n">thing</span><span class="p">)</span>
+<span class="p">...</span>  <span class="n">thing</span><span class="p">.</span><span class="n">append</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="p">...</span>  <span class="k">print</span><span class="p">(</span><span class="n">thing</span><span class="p">)</span>
+<span class="p">...</span>
+<span class="o">&gt;&gt;&gt;</span> <span class="n">foo</span><span class="p">()</span>
+<span class="p">[]</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+<span class="o">&gt;&gt;&gt;</span> <span class="n">foo</span><span class="p">()</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="o">&gt;&gt;&gt;</span> <span class="n">foo</span><span class="p">()</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="o">&gt;&gt;&gt;</span> <span class="n">foo</span><span class="p">()</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="o">&gt;&gt;&gt;</span>
+</code></pre></div></div>
+
+<p>The object we set as the default argument is mutated in between calls because
+the mutable object is instantiated when the function itself is defined. When the
+function is called without supplying an argument, the object that’s swapped in
+is the same one every time.</p>
+
+<p>This can lead to unexpected behavior as every bit of python code you have that
+calls the ‘foo’ function is supposed to assume that the default argument is an
+empty list.  Users of the <code class="language-plaintext highlighter-rouge">foo</code> function would look at how you’ve defined it and
+see right there you should expect the list to start empty!</p>
+
+<p>While you may tell yourself, “<em>Well, I know what I’m doing</em>,” and that “<em>I wouldn’t
+be so foolish that I’d call this function twice during the same process</em>”
+or even more dangerously “<em>Well this function is really passed into a job
+running framework and be called outside my app, so what could possibly go
+wrong?</em>”. However, the simple truth is that any footgun is more dangerous when you load it
+with ammunition, and a function with a mutable default argument is quite simply
+a loaded footgun.</p>
+
+<p>If you write code that can be called incorrectly, someone on your team will call
+it incorrectly – or you yourself many weeks into the future will call it
+incorrectly.  Any code that has unclear behaviors will cause you headaches later
+on.</p>
+
+<p>A place where you wouldn’t expect the footgun to go off is in a job-running
+framework.  Celery is a distributed job-running framework written back in 2009
+and has maintained a long and winding tenure of nine years (at the time of this
+writing). It has been used by thousands of companies for everything from asynchronous
+jobs to supplement their applications, to a cron-replacement for running periodic
+tasks.  Supporting many types of message brokers,  Celery can be scaled up by
+simply adding more worker nodes and workers pull work off the queue when they
+are finished with their current running task.</p>
+
+<p>Celery provides an easy-to-reason-about decorator interface that allows you to label
+a function as being allowed to run in a distributed manner – to be able to run
+the function on any worker that is connected to your message broker.  As we have
+seen above, however, it’s possible to accidentally define a function that stores
+state in-between runs, resulting in unexpected behavior.</p>
+
+<p>If we’re following the <a href="http://docs.celeryproject.org/en/latest/getting-started/first-steps-with-celery.html">Getting Started</a> tutorial for celery, we can add our
+familiar footgun task like so</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">@</span><span class="n">app</span><span class="p">.</span><span class="n">task</span>
+<span class="k">def</span> <span class="nf">foo</span><span class="p">(</span><span class="n">thing</span><span class="o">=</span><span class="p">[]):</span>
+    <span class="n">thing</span><span class="p">.</span><span class="n">append</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">thing</span>
+</code></pre></div></div>
+
+<p>Start up the celery app in its own terminal with</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>celery -A tasks worker --loglevel=infoj
+</code></pre></div></div>
+
+<p>And now you can open up a python interpreter in another terminal and schedule
+the task several times and you can see the obvious memory leak in action:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>&gt;&gt;&gt; import tasks
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: e5cc611c-316c-48af-8af2-130b81c995be&gt;
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: 885c5165-d5a7-439b-a345-ed6a8e2e2c52&gt;
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: 631b0a6a-605d-4b1f-89ed-942d95d53e5b&gt;
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: 9931cc29-6f82-4417-aa0d-641477ad3987&gt;
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: bce60838-f562-4c0b-98f4-c008e4469668&gt;
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: c4f1f286-8df7-45f5-8d76-375cf94940af&gt;
+&gt;&gt;&gt; tasks.foo.delay()
+&lt;AsyncResult: 05a438be-29ca-4cfd-8667-726776a8552e&gt;
+&gt;&gt;&gt;
+</code></pre></div></div>
+
+<p>In the worker terminal</p>
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code> Received task: tasks.foo[885c...c52]
+ Task tasks.foo[885c...c52] succeeded in 0.0001...s: [1]
+ Received task: tasks.foo[631b...e5b]
+ Task tasks.foo[631b...e5b] succeeded in 0.0001...s: [1, 1]
+ Received task: tasks.foo[993...3987]
+ Task tasks.foo[993...3987] succeeded in 0.0001...s: [1, 1]
+ Received task: tasks.foo[bce...9668]
+ Task tasks.foo[bce...9668] succeeded in 0.0001...s: [1, 1, 1]
+ Received task: tasks.foo[c4f...40af]
+ Task tasks.foo[c4f...40af] succeeded in 0.0001...s: [1, 1, 1]
+ Received task: tasks.foo[05a...552e]
+ Task tasks.foo[05a...552e] succeeded in 0.0001...s: [1, 1, 1, 1]
+</code></pre></div></div>
+
+<p>The log line of celery has a lot going on in it, but the part at the end that
+says <code class="language-plaintext highlighter-rouge">succeded in ...: [1, 1, 1, 1]</code> displays the value returned by our job.
+Every time we call it, the worker that picks it up accumulates state in the
+python process’s memory.</p>
+
+<p>This shows how dangerous it is to assume that a pattern should be allowed in
+your codebase even though you don’t have any code that explicitly calls that
+python function.  It’s so much easier to just follow the <a href="https://docs.python-guide.org/writing/gotchas/#mutable-default-arguments">clear guidelines</a>
+established by the community to avoid such common pitfalls, even if you think
+there’s no way these rules apply to you.</p>
+
+
+  </div>
+
+</article>
+
+      </div>
+    </div>
+
+    <footer class="site-footer">
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Conrad Dean</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <p>Software Engineer in New York City
+</p>
+      </div>
+
+      <div class="footer-col footer-col-2">
+        <ul class="social-media-list">
+          
+          <li>
+              <! -- hack to make links line up -->
+              <a href="https://www.linkedin.com/in/cpdean"><span class="icon icon--twitter" style="display:inline-block; width:20px;"></span><span class="username">LinkedIn</span></a>
+          </li>
+          
+          
+          <li>
+            <a href="https://github.com/cpdean"><span class="icon icon--github"><svg viewBox="0 0 16 16"><path fill="#828282" d="M7.999,0.431c-4.285,0-7.76,3.474-7.76,7.761 c0,3.428,2.223,6.337,5.307,7.363c0.388,0.071,0.53-0.168,0.53-0.374c0-0.184-0.007-0.672-0.01-1.32 c-2.159,0.469-2.614-1.04-2.614-1.04c-0.353-0.896-0.862-1.135-0.862-1.135c-0.705-0.481,0.053-0.472,0.053-0.472 c0.779,0.055,1.189,0.8,1.189,0.8c0.692,1.186,1.816,0.843,2.258,0.645c0.071-0.502,0.271-0.843,0.493-1.037 C4.86,11.425,3.049,10.76,3.049,7.786c0-0.847,0.302-1.54,0.799-2.082C3.768,5.507,3.501,4.718,3.924,3.65 c0,0,0.652-0.209,2.134,0.796C6.677,4.273,7.34,4.187,8,4.184c0.659,0.003,1.323,0.089,1.943,0.261 c1.482-1.004,2.132-0.796,2.132-0.796c0.423,1.068,0.157,1.857,0.077,2.054c0.497,0.542,0.798,1.235,0.798,2.082 c0,2.981-1.814,3.637-3.543,3.829c0.279,0.24,0.527,0.713,0.527,1.437c0,1.037-0.01,1.874-0.01,2.129 c0,0.208,0.14,0.449,0.534,0.373c3.081-1.028,5.302-3.935,5.302-7.362C15.76,3.906,12.285,0.431,7.999,0.431z"/></svg>
+</span><span class="username">cpdean</span></a>
+
+          </li>
+          
+
+          
+          <li>
+            <a href="https://twitter.com/deanc"><span class="icon icon--twitter"><svg viewBox="0 0 16 16"><path fill="#828282" d="M15.969,3.058c-0.586,0.26-1.217,0.436-1.878,0.515c0.675-0.405,1.194-1.045,1.438-1.809c-0.632,0.375-1.332,0.647-2.076,0.793c-0.596-0.636-1.446-1.033-2.387-1.033c-1.806,0-3.27,1.464-3.27,3.27 c0,0.256,0.029,0.506,0.085,0.745C5.163,5.404,2.753,4.102,1.14,2.124C0.859,2.607,0.698,3.168,0.698,3.767 c0,1.134,0.577,2.135,1.455,2.722C1.616,6.472,1.112,6.325,0.671,6.08c0,0.014,0,0.027,0,0.041c0,1.584,1.127,2.906,2.623,3.206 C3.02,9.402,2.731,9.442,2.433,9.442c-0.211,0-0.416-0.021-0.615-0.059c0.416,1.299,1.624,2.245,3.055,2.271 c-1.119,0.877-2.529,1.4-4.061,1.4c-0.264,0-0.524-0.015-0.78-0.046c1.447,0.928,3.166,1.469,5.013,1.469 c6.015,0,9.304-4.983,9.304-9.304c0-0.142-0.003-0.283-0.009-0.423C14.976,4.29,15.531,3.714,15.969,3.058z"/></svg>
+</span><span class="username">deanc</span></a>
+
+          </li>
+          
+        </ul>
+      </div>
+
+      <div class="footer-col footer-col-3">
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+
+
+  </body>
+
+</html>

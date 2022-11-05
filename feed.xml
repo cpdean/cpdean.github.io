@@ -1,0 +1,2054 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Conrad Dean</title>
+    <description>Software Engineer in New York City
+</description>
+    <link>http://blog.conradpdean.com/</link>
+    <atom:link href="http://blog.conradpdean.com/feed.xml" rel="self" type="application/rss+xml"/>
+    <pubDate>Sat, 05 Nov 2022 08:56:07 -0400</pubDate>
+    <lastBuildDate>Sat, 05 Nov 2022 08:56:07 -0400</lastBuildDate>
+    <generator>Jekyll v4.3.1</generator>
+    
+      <item>
+        <title>Why is Datalog Good for Searching Code?</title>
+        <description>&lt;p&gt;During the Summer of 2019 I got really interested in Datalog.  It’s a language
+that is a syntactic subset of Prolog, with a few constraints that prevents the
+language from being Turing-Complete.  As a result, you can’t use the language
+for most problems, but it is only really meant for querying a database of messy
+inter-connected facts of data.  Because it’s not Turing Complete, every Datalog
+program is guaranteed to finish, and a query optimizer can do things
+behind-the-scenes to make queries run fast.&lt;/p&gt;
+
+&lt;p&gt;The original problem that got me interested in Datalog was &lt;a href=&quot;https://github.com/rust-lang/polonius&quot;&gt;this
+project&lt;/a&gt; to simplify the underlying code
+that powers Rust’s borrow checker.  By describing the meat of the logic in
+Datalog, the actual code becomes much more high-level and aligns with the intent
+of the rules of borrow-checking, while at the same time becoming less prone to
+various kinds of bugs you can accidentally write when traversing complicated
+datastructures like internals that represent source code.&lt;/p&gt;
+
+&lt;p&gt;A year went by, and despite learning broadly about a lot of different logic
+languages, I haven’t managed to approach anything in my own work that requires
+that degree of high-level rule management with low-level concrete application.&lt;/p&gt;
+
+&lt;p&gt;Last month, Pete Vilter &lt;a href=&quot;https://petevilter.me/post/datalog-typechecking/&quot;&gt;wrote about using Datalog as the interface to searching
+through your code&lt;/a&gt;.  He
+demonstrated how concise it can be to implement type inference over a language
+using Datalog once your parser is able to produce facts for Datalog’s EDB.&lt;/p&gt;
+
+&lt;p&gt;While I hadn’t found any immediate practical reason to use Datalog or another
+logic language in any of my projects directly, the idea of Datalog as your
+method of searching through code is something I could use daily!&lt;/p&gt;
+
+&lt;p&gt;Today, most people use basic text search tools to find things in a codebase, whether it’s to find where something was defined, or to see all the places where a function gets called.  For small questions of a codebase this is fine, but it has its limits.  For example, it only works if your code is clean and consistent to find things.  Additionally, it can only help you find the first step in a question that has multiple steps, like “Where are all the places this is called, &lt;strong&gt;and&lt;/strong&gt; how many of them is this called with a string that wasn’t passed through the string sanitizing function?”&lt;/p&gt;
+
+&lt;h2 id=&quot;how-code-search-works-today&quot;&gt;How Code Search Works Today&lt;/h2&gt;
+
+&lt;p&gt;Let’s say you need to track down all of the possible routes in a service.   For
+our service, all requests get sent through this large function body that has a
+large number of branches to route the request on to the various handlers.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;if (request.methodLine == &quot;AddTransaction&quot;) {
+    addTxn(request);
+} else if (request.methodLine == &quot;AuditTransaction&quot;) {
+    auditTxn(request);
+} else if (request.methodLine ==  &quot;AppendTransaction&quot;) {
+    appendTxn(request);
+} else if (request.methodLine == &apos;SuspendTransaction&apos;) {
+    suspendTxn(request);
+} else if (request.methodLine == &quot;RestoreTransaction&quot;) {
+    restoreTxn(request);
+} else if (request.methodLine ==  &apos;DeductTransaction&apos;) {
+    deductTxn(request);
+} else if (request.methodLine == &apos;FlatterTransaction&apos;) {
+    flatterTxn(request);
+} // ...
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;You can get a messy list of routes that are supported by the server with:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;grep -R &quot;methodLine\s*==\s*\&quot;\w\+\&quot;&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Which says “find every line with a string being compared to ‘methodLine’”. This
+is pretty good! But it actually misses at least half of our routes. Why?  Some
+of the routes use single quotes instead of double quotes. We could change our
+grep to deal with that:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;grep -R &quot;methodLine\s*==\s*[&apos;\&quot;]\w\+[&apos;\&quot;]&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Or we can clean up our code and demand everyone abide by The Standards when
+making code changes. It is tempting to demand discipline and rigorous conformity
+to arbitrary rules when there’s a systemic problem permeating a community, like
+using text to represent literally everything in a computer, but you find a new
+problem once you clean up all the code:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;// ...
+} else if (request.methodLine ==  &apos;DeductTransaction&apos;) {
+    deductTxn(request);
+} else if (request.methodLine == &apos;FlatterTransaction&apos;) {
+    flatterTxn(request);
+} else {
+    // use new macro + class-based request routing
+    /*
+        ROUTE(Foo) expands to:
+        if (request.methodLine = &quot;Foo&quot;) {
+            new Foo(request);
+        }
+    */
+    ROUTE(InsultTransaction);
+    ROUTE(ThreatenTransaction);
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Someone wrote a macro to automate boilerplate for new command handlers. The code
+you are grepping for no longer even exists after a certain point. You could
+graft a new regex onto the old one, but it still isn’t great.&lt;/p&gt;
+
+&lt;p&gt;But we’re stuck with grep because text is all that’s accessible to us. While
+it’s possible to hook into your compiler’s API, nobody has the time to learn
+the compiler API to come up with a way to run the compiler all the way up to
+the AST stage, keep the results, then craft some graph traversal to look for the
+abstract pattern that represents the routing branches above. Instead we’d probably stitch
+together a couple of regexes, gathering results in some scratch files, then use
+a text editor to clean things up and stitch them all together to get a
+comprehensive list of every route.&lt;/p&gt;
+
+&lt;h2 id=&quot;datalog-for-a-smarter-search&quot;&gt;Datalog for a Smarter Search&lt;/h2&gt;
+
+&lt;p&gt;Switching to a Datalog-based workflow for querying code is exciting because it
+opens up the possibility to write that same search in a way that looks something
+like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;routeEndpoint(RouteName) :-
+    equalityCheck(F, SLiteralNode),
+    getField(R, &apos;methodLine&apos;, F),
+    requestClass(R),
+    stringLiteral(SLiteralNode, RouteName).
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;You’d define that rule, then ask the engine for &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;routeEndpoint(X)?&lt;/code&gt;, and it’d
+traverse the codebase looking for every instance where there’s an equality
+check between two things&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;... :-
+equalityCheck(F, SLiteralNode), ...
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Those two things are given names in the rule, &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;F&lt;/code&gt; and &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;SLiteralNode&lt;/code&gt;. These
+names don’t have a semantic value associated with them yet, but we establish
+what they mean next. The &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;F&lt;/code&gt; variable is the result of &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;getField&lt;/code&gt;, which would
+come from the compiler as it builds up the AST. Put together, the two predicates&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;...
+getField(R, &apos;methodLine&apos;, F),
+requestClass(R),
+...
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;represent the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;.methodLine&lt;/code&gt; part of the check &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;request.methodLine ==
+&quot;AddTransaction&quot;&lt;/code&gt;&lt;/p&gt;
+
+&lt;p&gt;Next we define what &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;SLiteralNode&lt;/code&gt; means in the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;equalityCheck(F, SLiteralNode)&lt;/code&gt;
+predicate with&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    ...
+    stringLiteral(SLiteralNode, RouteName).
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Our parser gives us something called &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;stringLiteral(Node,
+ValueInsideStringLiteral)&lt;/code&gt;. Which represents the String object
+&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;&quot;AddTransaction&quot;&lt;/code&gt; in the code &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;request.methodLine == &quot;AddTransaction&quot;&lt;/code&gt;, and
+gives us a way to pluck the value of that string literal out.&lt;/p&gt;
+
+&lt;p&gt;So now that all of the terms we are searching for are defined, the Datalog
+engine would look for matches. Instead of scanning through messy text, we are
+searching for specific patterns that happen in the codebase’s abstract syntax
+tree. We avoid whitespace differences, or single/double-quote issues because
+we’re now dealing with the high-level datastructure that represents the actual
+code itself instead of the text of the file. Additionally, our macro-problem
+goes away because the macro is expanded into the same syntax tree format as our
+normal text code, so it can find instances that are hard to search for because
+of our shyness to boilerplate in our text.&lt;/p&gt;
+
+&lt;h1 id=&quot;semantic-search-adapts-to-change&quot;&gt;Semantic Search Adapts to Change&lt;/h1&gt;
+
+&lt;p&gt;This is already a huge improvement over raw text searching, but Datalog is also
+better at adapting to code refactors.&lt;/p&gt;
+
+&lt;p&gt;Let’s say someone starts to refactor our code to use constants for those
+routes. If they kept the constants in a macro, it’d expand to the same
+string literals and, depending on our underlying foundation of Datalog facts
+nothing would need to change. However, if they started using String objects
+instead of string literals, we could add a rule to catch that.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;const string ADDTRANSACTION = &quot;AddTransaction;
+const string AUDITTRANSACTION = &quot;AuditTransaction;
+// TODO: move more routes to constants
+
+
+if (request.methodLine == ADDTRANSACTION) {
+    addTxn(request);
+} else if (request.methodLine == AUDITTRANSACTION) {
+    auditTxn(request);
+} else if (request.methodLine ==  &quot;AppendTransaction&quot;) {
+    appendTxn(request);
+} else if (request.methodLine == &apos;SuspendTransaction&apos;) {
+    suspendTxn(request);
+} else if (request.methodLine == &quot;RestoreTransaction&quot;) {
+...
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We can change our predicate for matching string literals to a rule that handles both
+cases:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;% multi-headed rules let us match in more than one case
+stringValue(S, V) :- getField(StrObj, &apos;value&apos;, V), stringClass(StrObj).
+stringValue(S, V) :- StringLiteral(ASTNode, V).
+
+% Our original search rule, with the stringLiteral replaced for stringValue
+routeEndpoint(RouteName) :-
+    equalityCheck(F, S),
+    getField(R, &apos;methodLine&apos;, F),
+    requestClass(R),
+    stringValue(S, RouteName).
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Adding two definitions for &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;stringValue(S, V)&lt;/code&gt; lets us express the string value
+inside a string object, both for string object and string literals.
+We update &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;routeEndpoint(RouteName)&lt;/code&gt; to use &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;stringValue&lt;/code&gt; and now this search
+will continue to work during the partial refactor.&lt;/p&gt;
+
+&lt;h2 id=&quot;text-was-a-bad-choice&quot;&gt;Text was a Bad Choice&lt;/h2&gt;
+
+&lt;p&gt;The reason why I’m excited about this idea is that while grep gets you a
+long way, it requires your code to be extremely consistent and never change
+when you need to answer certain questions about your codebase, and it can only
+give you answers as a list of lines of text.&lt;/p&gt;
+
+&lt;p&gt;This is good enough if you can stop there, but if you need to take those lines
+of text and do a second step of searching, you now have to deal with parsing
+those results into a new script that goes off and performs more searches for
+every line.&lt;/p&gt;
+
+&lt;h2 id=&quot;answering-harder-questions-with-datalog&quot;&gt;Answering Harder Questions with Datalog&lt;/h2&gt;
+
+&lt;p&gt;In my case, I want to find routes without test coverage. Remaining in this
+text-in-text-out pipeline seems acceptable if it’s the only way you’ve ever
+dealt with code, but it trades consistency in one part of the problem (“This is
+easy because everything is text”) for an enormous amount of complexity literally
+everywhere else (“I have text inside my text that represents another layer of
+text so after I escape the escaped text I need to unescape it to feed it
+into…”).&lt;/p&gt;
+
+&lt;p&gt;For my goal of finding test coverage, staying in Datalog is actually better
+because my &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;routeEndpoint(RouteName)&lt;/code&gt; rule cleanly chains into other rules I can
+write! I can write a rule that finds a test that contains code hitting the
+server with a particular route:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;mentionsRoute(Test, RouteName) :-
+    pythonTest(Test),
+    pythonFunction(Test, FunctionObject),
+    lineInFunction(FunctionObject, Line),
+    expressionsInLine(Line, Expression),
+    methodCallExpression(Expression, M),
+    methodCall(M, AnyObj, &apos;sendRequest&apos;, RouteName).
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;These predicate facts are kind of hand-wavy, but you could imagine a parser
+could read in the text for a function, and it would produce facts for every
+python function to describe every line and every expression that’s in every
+line, reproducing the AST. Once we have a rule that can go from every test
+and tell us a route that’s found in a test, we can find every route that
+needs a test.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;routesThatNeedTests(RouteName) :-
+    routeEndpoint(RouteName),
+    not mentionsRoute(_, RouteName).
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The above rule would find every route, and find every test of a route, and
+then tell you which routes don’t appear in the set of tests.&lt;/p&gt;
+
+&lt;h2 id=&quot;speed-up-continuous-integration-with-datalog&quot;&gt;Speed Up Continuous Integration with Datalog&lt;/h2&gt;
+
+&lt;p&gt;You can also build queries that help you in other ways:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;% imagine we&apos;ve written something to parse the diff for files
+% and line numbers
+linesChangedBetweenGitRevisions(OldCommit, NewCommit, Line) :- ...
+
+% assuming AST nodes link back to their files and line numbers,
+% this rule is a typical vertex reachability query in Datalog
+routeTouchesLine(Route, Line) :- ... 
+
+routesAffectedByDiff(OldCommit, NewCommit, Route) :-
+    routeTouchesLine(Route, Line),
+    linesChangedBetweenGitRevisions(OldCommit, NewCommit, Line).
+
+% this is the rule you can use to speed up CI, only run tests that need to be run!
+testAffectedByDiff(OldCOmmit, NewCommit, Test) :-
+    routesAffectedByDiff(OldCOmmit, NewCommit, Route),
+    mentionsRoute(Test, Route).
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;So when a PR comes in, or when commits are pushed onto master, your CI tool
+should know how to get the old and new git commit ids, and it can get a list
+of tests to run with&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;testsAffectedByDiff(&apos;abc4f3&apos;, &apos;ccd333&apos;, Test)?
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;As long as it gives you your list of tests in the right format, you can pass it
+to your test runner, like&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;datalog_search &quot;testsAffectedByDiff(&apos;abc4f3&apos;, &apos;ccd333&apos;, Test)?&quot; \
+    | xargs pytest -v
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+</description>
+        <pubDate>Sun, 09 Aug 2020 00:00:00 -0400</pubDate>
+        <link>http://blog.conradpdean.com/2020/08/09/why-is-datalog-good-for-searching-code.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2020/08/09/why-is-datalog-good-for-searching-code.html</guid>
+        
+        
+      </item>
+    
+      <item>
+        <title>Interactive Generators in Python</title>
+        <description>&lt;p&gt;Python has a special primitive called a generator.  A generator is an iterable
+that could be backed by a data structure, or some other form of deferred
+computation.  Python has a toolkit in the standard library called &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;itertools&lt;/code&gt;
+that provides a set of high-level functions for producing and combining
+iterables in special ways.  This year’s Advent of Code day 16 problem involved
+multiplying a set of numbers by an sequence of numbers following a specific
+pattern:&lt;/p&gt;
+
+&lt;blockquote&gt;
+  &lt;ol&gt;
+    &lt;li&gt;Start from a repeating pattern of [0, 1, 0, -1, …]&lt;/li&gt;
+    &lt;li&gt;For the given digit you are calculating, repeat each element that many
+times. So for the first digit, use [0, 1, 0, -1, …], for the second digit
+use [0, 0, 1, 1, 0, 0, -1, -1, …], for the third, [0, 0, 0, 1, 1, 1, 0,
+0, 0, -1, -1, -1, …]&lt;/li&gt;
+    &lt;li&gt;Shift the sequence by one by discarding the first element.  So the first
+pattern would start with [1, 0, 1, -1, …], the second with [0, 1, 1, 0,
+0, -1, -1, …] and so on.&lt;/li&gt;
+  &lt;/ol&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;In Python, you can use itertools to implement the above requirements fairly
+concisely:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;import itertools
+
+def base_pattern(i):
+    base = [0, 1, 0, -1]
+    expanded = itertools.chain.from_iterable([e] * i for e in base)
+    repeated = itertools.cycle(expanded)
+    first_skipped = itertools.islice(repeated, 1, None)
+    return first_skipped
+
+list(itertools.islice(base_pattern(1), 10))
+# [1, 0, -1, 0, 1, 0, -1, 0, 1, 0]
+list(itertools.islice(base_pattern(2), 10))
+# [0, 1, 1, 0, 0, -1, -1, 0, 0, 1]
+list(itertools.islice(base_pattern(3), 10))
+# [0, 0, 1, 1, 1, 0, 0, 0, -1, -1]
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;In Python, all the intermediate steps of composing our requirements in code take
+the form of generators.  To view the output of our &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;base_pattern(..)&lt;/code&gt; results,
+we have to wrap it in a &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;list(itertools.islice(...))&lt;/code&gt; in order to grab the first
+few elements of what is actually an infinitely-long sequence of elements.&lt;/p&gt;
+
+&lt;p&gt;Occasionally, you need to write code that is more low-level than the high-level
+tools provided by &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;itertools&lt;/code&gt; and generator-comprehension syntax. For this
+Python lets you specify a generator much in the same way you’d write a function,
+but instead of &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;return&lt;/code&gt;‘ing your data, you &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;yield&lt;/code&gt; it.&lt;/p&gt;
+
+&lt;p&gt;Where a &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;return&lt;/code&gt; statement in a function results in the code of the function
+halting and bailing out, a &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;yield&lt;/code&gt; pauses the control flow in the code of a
+function, and will resume it when the generator needs to produce the next value
+in a sequence.&lt;/p&gt;
+
+&lt;p&gt;Let’s convert the above high-level code into something more direct by writing
+the generator ourselves.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;# translate
+def base_pattern(i):
+    base = [0, 1, 0, -1]
+    expanded = itertools.chain.from_iterable([e] * i for e in base)
+    repeated = itertools.cycle(expanded)
+    first_skipped = itertools.islice(repeated, 1, None)
+    return first_skipped
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Something else we can do with generators, is rely on an interactive API to
+create a body of code that responds to novel inputs.  Passing a generator to the
+&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;next(..)&lt;/code&gt; built-in function is how we pull an element out of a generator, and
+calling the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;.send(..)&lt;/code&gt; method on a generator is how we pass an element to it,
+causing the deferred computation inside of it to change.&lt;/p&gt;
+
+&lt;p&gt;Let’s begin by defining a small generator that just returns one element, and
+then use the Python interpreter to interact with it.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;def toy(n):
+    yield n
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Instantiate the generator and try to pull things out of it&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&amp;gt;&amp;gt;&amp;gt; def toy(n):
+...     yield n
+...
+&amp;gt;&amp;gt;&amp;gt; t = toy(3)
+&amp;gt;&amp;gt;&amp;gt; t
+&amp;lt;generator object toy at 0x7f3dad6badd0&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; next(t)
+3
+&amp;gt;&amp;gt;&amp;gt; next(t)
+Traceback (most recent call last):
+  File &quot;&amp;lt;stdin&amp;gt;&quot;, line 1, in &amp;lt;module&amp;gt;
+StopIteration
+&amp;gt;&amp;gt;&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;StopIteration&lt;/code&gt; exception just means that the generator cannot advance
+forwards via the normal iterable API.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;
+&amp;gt;&amp;gt;&amp;gt; def toy(n):
+...   while True:
+...     if n == 0:
+...        break
+...     for i in range(n):
+...       yield i
+...     n = yield
+...
+&amp;gt;&amp;gt;&amp;gt; t = toy(2)
+&amp;gt;&amp;gt;&amp;gt; next(t)
+0
+&amp;gt;&amp;gt;&amp;gt; next(t)
+1
+&amp;gt;&amp;gt;&amp;gt; next(t)
+&amp;gt;&amp;gt;&amp;gt; next(t)
+Traceback (most recent call last):
+  File &quot;&amp;lt;stdin&amp;gt;&quot;, line 1, in &amp;lt;module&amp;gt;
+  File &quot;&amp;lt;stdin&amp;gt;&quot;, line 5, in toy
+TypeError: &apos;NoneType&apos; object cannot be interpreted as an integer
+&amp;gt;&amp;gt;&amp;gt; next(t)
+Traceback (most recent call last):
+  File &quot;&amp;lt;stdin&amp;gt;&quot;, line 1, in &amp;lt;module&amp;gt;
+StopIteration
+&amp;gt;&amp;gt;&amp;gt; next(t)
+Traceback (most recent call last):
+  File &quot;&amp;lt;stdin&amp;gt;&quot;, line 1, in &amp;lt;module&amp;gt;
+StopIteration
+&amp;gt;&amp;gt;&amp;gt; t.send(3)
+Traceback (most recent call last):
+  File &quot;&amp;lt;stdin&amp;gt;&quot;, line 1, in &amp;lt;module&amp;gt;
+StopIteration
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;wow that’s interesting – it is possible to call next() on it again and break
+the little toy. maybe there is some way to make a command/control convention so
+that you can inspect if it is asking for a next value or not.&lt;/p&gt;
+</description>
+        <pubDate>Sat, 12 Jan 2019 00:00:00 -0500</pubDate>
+        <link>http://blog.conradpdean.com/2019/01/12/interactive-generators.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2019/01/12/interactive-generators.html</guid>
+        
+        
+      </item>
+    
+      <item>
+        <title>Starting RC</title>
+        <description>&lt;p&gt;This isn’t an article about any specific topic but more of a personal update.
+This past Monday I started at Recurse Center for a full batch.  I’m planning on
+putting in as much solid practice as I can in Rust to both internalize all the
+weirdness it has around protecting you from bugs in concurrent code,
+familiarizing myself more with its ecosystem, and scouting out opportunities for
+fixing a bug in an open source library or tool in Rust.&lt;/p&gt;
+
+&lt;p&gt;Additionally, I plan on exercising what’s available to me for developer tooling
+in Linux, so for the next three months I will be using an old Linux laptop I
+bought from a friend a several months ago.  When I got it, I immediately installed
+i3wm and got it almost set up to be as comfortable as my how I use macOS, but
+lost interest in the project.  Coming back to it, I’ve been only in Gnome/Ubuntu
+as I got my bearings but this weekend I started looking at i3wm again.&lt;/p&gt;
+
+&lt;h3 id=&quot;rc---first-impressions&quot;&gt;RC - First Impressions&lt;/h3&gt;
+
+&lt;p&gt;There were a few icebreaker events on Monday, followed by a workshop on pair
+programming on Tuesday. The general advice being tossed around is to focus on
+meeting and learning about the people around you, which makes sense given the
+themes around thriving in a community.&lt;/p&gt;
+
+&lt;p&gt;Something that I hadn’t expected to hit me that hard is how few opportunities I
+had to help others this week.  I’m used to being able to wander around at work
+and strike up conversations with the people there and at least provide some sort
+of guidance or help fix a problem.  I hadn’t realized how much I took that
+rapport and those relationships for granted.  This is my first time in over
+three years a new space and I didn’t realize how much I relied on institutional
+knowledge, knowing what kinds of help people needed, and my background in my
+domain for providing that kind of support.&lt;/p&gt;
+
+&lt;p&gt;At Recurse, everyone is a stranger, everyone is working on something totally
+different, and using a completely different stack.  I worry that I have nothing
+to provide and there isn’t any way for me to be providing value here.&lt;/p&gt;
+
+&lt;p&gt;Also, nobody knows what they can reach out to me for.  At work people generally
+know what I have a background and context in, and so when they need help in
+something like that they know to turn to me.  In a new environment that’s not
+the case at all and it’ll take a while to get to the point where I can feel like
+I’m properly helping others.&lt;/p&gt;
+
+&lt;h3 id=&quot;early-project-ideas&quot;&gt;Early Project Ideas&lt;/h3&gt;
+
+&lt;p&gt;I’ve been using Rust on small projects on and off for a couple of years.  I know
+the language well enough to know what to Google for and I generally know why
+(though not always how to solve) the compiler yells at you for borrow-checker
+errors.&lt;/p&gt;
+
+&lt;p&gt;An on-going issue I’ve noticed in my use of Rust is that I never pick a project
+or an implementation that benefits from the constraints that the borrow checker
+puts on you.  A unique feature of Rust is how it aggressively prevents you from
+allowing any section of memory to be accessible to more than one piece of code
+at a time.  This constraint prevents you from writing code that could have
+tricky bugs that are hard to reproduce and fix, but most of that code requires
+that you are writing something with several concurrent threads.  Bugs in
+single-threaded programs are much easier to deal with because you can trust that
+your code will execute its actions in the order that they’re written.  Programs
+with concurrent threads may have actions that happen in many possible orders,
+like riffling two decks of cards together, shuffling them into one deck that
+represents the sequence of actions that happened in the history of this
+particular run of the program.&lt;/p&gt;
+
+&lt;p&gt;By making sure that a piece of memory is only accessible to one piece of code at
+a time, Rust can provide order to the shuffled cards and give you the confidence
+that certain types of bugs around concurrency will not happen when you run your
+program.  It does this without locks that would slow down your program, and at
+compile-time before you’ve even run your program.&lt;/p&gt;
+
+&lt;p&gt;Despite writing code for years, I’ve altogether avoided writing code that would
+benefit from something like this.  So instead I’ve been using Rust under the
+same kinds of constraints as a multi-threaded concurrent application with none
+of the benefits.  So I want to pick something that will have lots of moving
+parts and a big enough project that has be writing a lot of code.&lt;/p&gt;
+
+&lt;p&gt;At the start of the week I just had a vague idea to do something with networked
+services, so I began thumbing through a book on network programming in Rust from
+Packt Publishing.  After looking at it for a couple days I’ve decided it’s not a
+very useful book, but I’ve gotten the idea to try to build a network monitoring
+tool like htop but for network traffic.  I’ll get to learn a little bit about
+how to access low-level networking details with Rust, and learn about how to
+aggregate that data and render it to the screen.&lt;/p&gt;
+
+&lt;p&gt;Before that I wanted to learn as much of Tokio as I could and implement some
+algorithms from a Distributed Systems textbook I got a few months ago, but I’ve
+decided that network monitoring will be a more concrete goal and produce a tool
+I might actually want to use later.  Consensus algorithms are probably only
+useful if you’re building your own database, which I would never want to be on
+the hook for doing.&lt;/p&gt;
+
+&lt;h3 id=&quot;ongoing-goals&quot;&gt;Ongoing Goals&lt;/h3&gt;
+
+&lt;p&gt;Following my general long term goals of focusing on how to use computers better,
+I’m spending a lot of additional time retooling my computer.  Earlier this week
+I finally got Gnome in a good place where I had a focused task switcher in place
+and I finally got my Rust plugins for vim mostly working.  There’s still a
+couple of issues where coc.nvim will freeze vim when it proxies out to a command
+that throws an error, and occasionally the autocomplete will open up a
+documentation window for reasons I can’t figure out.  Then it leaves the
+documentation window open.  Rude.&lt;/p&gt;
+
+&lt;p&gt;If those things continue to annoy me I’ll have to deal with them, but for now
+I’m switching from Gnome to i3wm again and relearning how to use it.  It’s a
+pretty bare-bones environment and doesn’t even provide a way to lock your
+screen, connect to wifi, restart your computer, or go to sleep when you close
+the lid.&lt;/p&gt;
+
+&lt;p&gt;Despite it not providing an intuitive or learnable interface, when you figure
+out how to do what you want, it’s pretty rewarding and it’s a very reliable tool
+for managing the applications you want to use.  My last-straw moment in Gnome is
+that the default screenshot tool doesn’t let you copy a screenshot to the
+clipboard, which is my staple for making dumb internet jokes.  Another
+screenshot tool I’ve been using is called flameshot, which you for some reason
+need to invoke from a terminal.  If you open it from Gnome’s application
+launcher, you can only take a screenshot of the application launcher itself…
+So that’s as good a catalyst as any to dive back into learning a new paradigm
+for computer UI’s.&lt;/p&gt;
+
+&lt;h3 id=&quot;short-term-goals&quot;&gt;Short Term Goals&lt;/h3&gt;
+
+&lt;p&gt;After the chaos of the first week calmed down, I managed to get some code
+written on Thursday and Friday, finally getting a decent sense of the landscape
+for what I can do with network packets in Rust, and late Saturday morning I
+think I finally figured out the last piece I need for quantifying network
+bandwidth from it (libpnet documentation is pretty sparse, and assumes you
+already understand all the details of low-level networking and which bytes in a
+packet header mean what).  For an early version of my project I want to get it
+printing out a list of addresses and accumulating sums of bandwidth usage.  From
+there I hope I have a good enough foundation for building other kinds of ways to
+look at that data in curses.&lt;/p&gt;
+
+&lt;p&gt;Last week I only met about 1-3 people a day, so I want to do a bit better on
+that front.  I especially want to figure out who is interested in either
+developer tooling or Rust since that’s what I’m focusing on.  I’ve already
+helped someone a little on an example project in Rust that gave me a chance to
+teach and also a chance to bang my head against some obtuse compiler errors.  We
+came out ahead but I don’t quite know what the ideal solution was to what we
+were working on.&lt;/p&gt;
+
+&lt;p&gt;First week wasn’t particularly bad, though I could have at least written more
+code or met more people.  Eleven weeks left until I go back to work, though.&lt;/p&gt;
+</description>
+        <pubDate>Sat, 12 Jan 2019 00:00:00 -0500</pubDate>
+        <link>http://blog.conradpdean.com/2019/01/12/starting-rc.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2019/01/12/starting-rc.html</guid>
+        
+        
+      </item>
+    
+      <item>
+        <title>Default Arguments In Python: A Risky Gamble</title>
+        <description>&lt;p&gt;Python lets you define what are called &lt;em&gt;default arguments&lt;/em&gt; when defining a
+function.  They look like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;divide&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;numerator&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;denominator&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;numerator&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;/&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;denominator&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now you can divide numbers&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;divide&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;10&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;5&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;divide&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;10&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;mi&quot;&gt;10&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; 
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;You can omit an argument, and python will use the default you’ve provided.
+Something that you can do which is subtly dangerous is to specify a default that
+is a mutable object, like so:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;foo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[]):&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;  &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;  &lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;append&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;  &lt;span class=&quot;k&quot;&gt;print&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;...&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;foo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[]&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;foo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;foo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;foo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;&amp;gt;&amp;gt;&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The object we set as the default argument is mutated in between calls because
+the mutable object is instantiated when the function itself is defined. When the
+function is called without supplying an argument, the object that’s swapped in
+is the same one every time.&lt;/p&gt;
+
+&lt;p&gt;This can lead to unexpected behavior as every bit of python code you have that
+calls the ‘foo’ function is supposed to assume that the default argument is an
+empty list.  Users of the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;foo&lt;/code&gt; function would look at how you’ve defined it and
+see right there you should expect the list to start empty!&lt;/p&gt;
+
+&lt;p&gt;While you may tell yourself, “&lt;em&gt;Well, I know what I’m doing&lt;/em&gt;,” and that “&lt;em&gt;I wouldn’t
+be so foolish that I’d call this function twice during the same process&lt;/em&gt;”
+or even more dangerously “&lt;em&gt;Well this function is really passed into a job
+running framework and be called outside my app, so what could possibly go
+wrong?&lt;/em&gt;”. However, the simple truth is that any footgun is more dangerous when you load it
+with ammunition, and a function with a mutable default argument is quite simply
+a loaded footgun.&lt;/p&gt;
+
+&lt;p&gt;If you write code that can be called incorrectly, someone on your team will call
+it incorrectly – or you yourself many weeks into the future will call it
+incorrectly.  Any code that has unclear behaviors will cause you headaches later
+on.&lt;/p&gt;
+
+&lt;p&gt;A place where you wouldn’t expect the footgun to go off is in a job-running
+framework.  Celery is a distributed job-running framework written back in 2009
+and has maintained a long and winding tenure of nine years (at the time of this
+writing). It has been used by thousands of companies for everything from asynchronous
+jobs to supplement their applications, to a cron-replacement for running periodic
+tasks.  Supporting many types of message brokers,  Celery can be scaled up by
+simply adding more worker nodes and workers pull work off the queue when they
+are finished with their current running task.&lt;/p&gt;
+
+&lt;p&gt;Celery provides an easy-to-reason-about decorator interface that allows you to label
+a function as being allowed to run in a distributed manner – to be able to run
+the function on any worker that is connected to your message broker.  As we have
+seen above, however, it’s possible to accidentally define a function that stores
+state in-between runs, resulting in unexpected behavior.&lt;/p&gt;
+
+&lt;p&gt;If we’re following the &lt;a href=&quot;http://docs.celeryproject.org/en/latest/getting-started/first-steps-with-celery.html&quot;&gt;Getting Started&lt;/a&gt; tutorial for celery, we can add our
+familiar footgun task like so&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;app&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;task&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;foo&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[]):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;append&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;thing&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Start up the celery app in its own terminal with&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;celery -A tasks worker --loglevel=infoj
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And now you can open up a python interpreter in another terminal and schedule
+the task several times and you can see the obvious memory leak in action:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&amp;gt;&amp;gt;&amp;gt; import tasks
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: e5cc611c-316c-48af-8af2-130b81c995be&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: 885c5165-d5a7-439b-a345-ed6a8e2e2c52&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: 631b0a6a-605d-4b1f-89ed-942d95d53e5b&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: 9931cc29-6f82-4417-aa0d-641477ad3987&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: bce60838-f562-4c0b-98f4-c008e4469668&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: c4f1f286-8df7-45f5-8d76-375cf94940af&amp;gt;
+&amp;gt;&amp;gt;&amp;gt; tasks.foo.delay()
+&amp;lt;AsyncResult: 05a438be-29ca-4cfd-8667-726776a8552e&amp;gt;
+&amp;gt;&amp;gt;&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;In the worker terminal&lt;/p&gt;
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt; Received task: tasks.foo[885c...c52]
+ Task tasks.foo[885c...c52] succeeded in 0.0001...s: [1]
+ Received task: tasks.foo[631b...e5b]
+ Task tasks.foo[631b...e5b] succeeded in 0.0001...s: [1, 1]
+ Received task: tasks.foo[993...3987]
+ Task tasks.foo[993...3987] succeeded in 0.0001...s: [1, 1]
+ Received task: tasks.foo[bce...9668]
+ Task tasks.foo[bce...9668] succeeded in 0.0001...s: [1, 1, 1]
+ Received task: tasks.foo[c4f...40af]
+ Task tasks.foo[c4f...40af] succeeded in 0.0001...s: [1, 1, 1]
+ Received task: tasks.foo[05a...552e]
+ Task tasks.foo[05a...552e] succeeded in 0.0001...s: [1, 1, 1, 1]
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The log line of celery has a lot going on in it, but the part at the end that
+says &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;succeded in ...: [1, 1, 1, 1]&lt;/code&gt; displays the value returned by our job.
+Every time we call it, the worker that picks it up accumulates state in the
+python process’s memory.&lt;/p&gt;
+
+&lt;p&gt;This shows how dangerous it is to assume that a pattern should be allowed in
+your codebase even though you don’t have any code that explicitly calls that
+python function.  It’s so much easier to just follow the &lt;a href=&quot;https://docs.python-guide.org/writing/gotchas/#mutable-default-arguments&quot;&gt;clear guidelines&lt;/a&gt;
+established by the community to avoid such common pitfalls, even if you think
+there’s no way these rules apply to you.&lt;/p&gt;
+
+</description>
+        <pubDate>Fri, 05 Oct 2018 00:00:00 -0400</pubDate>
+        <link>http://blog.conradpdean.com/2018/10/05/default-arguments-risky-gamble.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2018/10/05/default-arguments-risky-gamble.html</guid>
+        
+        
+      </item>
+    
+      <item>
+        <title>Write Set Coverage in Hypothesis</title>
+        <description>&lt;p&gt;Coming up with properties is hard.&lt;/p&gt;
+
+&lt;p&gt;For example, say you want to implement set coverage.  Write a function that
+takes a list of sets, and returns the smallest list of these sets, where every
+element in the large set is now in the small set.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;n&quot;&gt;large_set_of_sets&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;large_set_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;  &lt;span class=&quot;c1&quot;&gt;# [{1, 2}]
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We’re going to walk through how to implement properties that test set coverage.
+Once we’ve written properties that give boundaried so it’s behavior, hypothesis
+will discover bugs in how we’ve written our code and give us concrete examples
+of bugs to fix.&lt;/p&gt;
+
+&lt;h2 id=&quot;what-are-our-properties&quot;&gt;What are our properties?&lt;/h2&gt;
+
+&lt;p&gt;What are the properties of &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;reduce_sets&lt;/code&gt; ?  If you want to steal from Discrete
+Math or CS, here are a couple:&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;The number of sets in the output is the same or less than the number of sets from the input.&lt;/li&gt;
+  &lt;li&gt;Every number in the list of input sets is in the list of output sets.&lt;/li&gt;
+  &lt;li&gt;Every set of numbers in the output list was also in the input list.&lt;/li&gt;
+  &lt;li&gt;There are no duplicate sets in the output.&lt;/li&gt;
+  &lt;li&gt;No output set is a subset of any other output set&lt;/li&gt;
+  &lt;li&gt;No output set is a subset of the other sets combined.&lt;/li&gt;
+  &lt;li&gt;The output set is the smallest possible number of sets with the previous properties still satisfied.&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;(I got most of these from &lt;a href=&quot;http://blog.jessitron.com/2013/04/property-based-testing-what-is-it.html&quot;&gt;Jessica Kerr&lt;/a&gt;)&lt;/p&gt;
+
+&lt;p&gt;The last property is particularly hard, for example the following two solutions
+are valid on all the properties but the last property:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;n&quot;&gt;large_set_of_sets&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;large_set_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;  &lt;span class=&quot;c1&quot;&gt;# [{1}, {2}] -- covers all the elements
+&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;large_set_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;  &lt;span class=&quot;c1&quot;&gt;# [{1, 2}]   -- but this is smaller
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;But we’ll get to why it’s &lt;a href=&quot;https://en.wikipedia.org/wiki/NP-hardness&quot;&gt;hard&lt;/a&gt; at the end.&lt;/p&gt;
+
+&lt;p&gt;Let’s work through how we’d implement these properties.&lt;/p&gt;
+
+&lt;h2 id=&quot;a-unit-test&quot;&gt;A Unit Test&lt;/h2&gt;
+
+&lt;p&gt;We’ll be using &lt;a href=&quot;http://hypothesis.readthedocs.io/en/latest/quickstart.html&quot;&gt;hypothesis&lt;/a&gt; with &lt;a href=&quot;http://pytest.org/latest/&quot;&gt;pytest&lt;/a&gt;.&lt;/p&gt;
+
+&lt;p&gt;Let’s turn our first example of how set coverage works into a unit test on its
+own.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;setcoverage&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;
+
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_example&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And here’s the minimum amount of code it takes to make the test pass:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Look! Set Coverage in one line!  Running the tests proves our success and genius:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;$ tox -e py27
+GLOB sdist-make: /Users/conrad/dev/set-coverage-example/setup.py
+py27 inst-nodeps: /Users/conrad/dev/set-coverage-example/.tox/dist/setcoverage-0.0.1.zip
+py27 installed: enum34==1.1.6,hypothesis==3.4.1,py==1.4.31,pytest==2.9.2,setcoverage==0.0.1,wheel==0.24.0
+py27 runtests: PYTHONHASHSEED=&apos;4047888479&apos;
+py27 runtests: commands[0] | py.test
+======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 1 items
+
+tests/test_thing.py .
+
+==================== 1 passed in 0.01 seconds =====================
+_____________________________ summary _____________________________
+  py27: commands succeeded
+  congratulations :)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;our-first-property-the-cardinality-constraint&quot;&gt;Our First Property: The Cardinality Constraint&lt;/h2&gt;
+
+&lt;p&gt;The first property we’re going to implement on our set coverage code is this:
+The output list of sets should have the same number of sets or fewer a number
+of sets than the input list of sets.&lt;/p&gt;
+
+&lt;p&gt;We know this has to be a property of a function that solves set coverage
+because if it didn’t have this property, that would mean it sometimes returns
+&lt;strong&gt;more&lt;/strong&gt; sets than it was given.  That goes against the premise of what it does
+– finding the smallest number of sets.&lt;/p&gt;
+
+&lt;p&gt;Here’s what that property looks like in python:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;strategies&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;
+
+&lt;span class=&quot;c1&quot;&gt;# ...
+&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_that_output_has_fewer_sets_than_input&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we’ll let hypothesis find us a failing test case by just re-running our
+test suite.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;
+======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 2 items
+
+tests/test_thing.py .F
+
+============================ FAILURES =============================
+___________ test_that_output_has_fewer_sets_than_input ____________
+
+    @h.given(st.lists(st.sets(st.integers())))
+&amp;gt;   def test_that_output_has_fewer_sets_than_input(sets):
+
+tests/test_thing.py:13:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.tox/py27/lib/python2.7/site-packages/hypothesis/core.py:520: in wrapped_test
+    print_example=True, is_final=True
+.tox/py27/lib/python2.7/site-packages/hypothesis/executors.py:58: in default_new_style_executor
+    return function(data)
+.tox/py27/lib/python2.7/site-packages/hypothesis/core.py:110: in run
+    return test(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+sets = []
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_that_output_has_fewer_sets_than_input(sets):
+        output = reduce_sets(sets)
+&amp;gt;       assert len(output) &amp;lt;= len(sets)
+E       assert 1 &amp;lt;= 0
+E        +  where 1 = len([set([1, 2])])
+E        +  and   0 = len([])
+
+tests/test_thing.py:15: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_that_output_has_fewer_sets_than_input(sets=[])
+=============== 1 failed, 1 passed in 0.10 seconds ================
+ERROR: InvocationError: &apos;/Users/conrad/dev/set-coverage-example/.tox/py27/bin/py.test&apos;
+_____________________________ summary _____________________________
+ERROR:   py27: commands failed
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Hypothesis found data which will show our implementation doesn’t satisfy
+that property.  Let’s zoom in on the error itself to see what Hypothesis tried.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;sets = []
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_that_output_has_fewer_sets_than_input(sets):
+        output = reduce_sets(sets)
+&amp;gt;       assert len(output) &amp;lt;= len(sets)
+E       assert 1 &amp;lt;= 0
+E        +  where 1 = len([set([1, 2])])
+E        +  and   0 = len([])
+
+tests/test_thing.py:15: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_that_output_has_fewer_sets_than_input(sets=[])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;At the beginning of the failure test case, we can see the input data clearly
+labeled: &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;sets = []&lt;/code&gt;.  This means that Hypothesis tried to run the test with an
+empty list.  If we look a bit closer at the assertion that failed we can see
+how the property we define interacts with the input data:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&amp;gt;       assert len(output) &amp;lt;= len(sets)
+E       assert 1 &amp;lt;= 0
+E        +  where 1 = len([set([1, 2])])
+E        +  and   0 = len([])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is a &lt;a href=&quot;http://pytest.org/latest/assert.html&quot;&gt;feature of pytest&lt;/a&gt; that extends Python’s built-in
+assertion statement to provide useful debug information.  It’s showing us how
+the empty list has zero elements, where our function is still returning data to
+solve its own use-case.&lt;/p&gt;
+
+&lt;p&gt;Let’s return to our implementation and write the minimum amount of code to pass both the test case and this property:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;# remove first and last item
+&lt;/span&gt;    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:][:&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;It just so happens that slice syntax will return empty lists if you over-slice
+and on our test case the input only needs the first and last items pruned to
+pass.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 2 items
+
+tests/test_thing.py ..
+
+==================== 2 passed in 0.31 seconds =====================
+_____________________________ summary _____________________________
+  py27: commands succeeded
+  congratulations :)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h1 id=&quot;property-two-all-elements-in-the-sets-are-in-the-output-from-the-input&quot;&gt;Property Two: All elements in the Sets are in the Output from the Input&lt;/h1&gt;
+
+&lt;p&gt;The next property of a function that does set coverage is that no items are lost
+in the output list.  To implement this property, we’ll just say that the
+set of all items coming in are the same as the set of all items coming out.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;functools&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;
+
+&lt;span class=&quot;c1&quot;&gt;# ...
+&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_no_items_lost&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;union&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;lambda&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;all_input&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;all_output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_input&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_output&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Easy enough, let’s see what Hypothesis finds:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 3 items
+
+tests/test_thing.py ..F
+
+============================ FAILURES =============================
+_______________________ test_no_items_lost ________________________
+
+    @h.given(st.lists(st.sets(st.integers())))
+&amp;gt;   def test_no_items_lost(sets):
+
+tests/test_thing.py:20:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.tox/py27/lib/python2.7/site-packages/hypothesis/core.py:520: in wrapped_test
+    print_example=True, is_final=True
+.tox/py27/lib/python2.7/site-packages/hypothesis/executors.py:58: in default_new_style_executor
+    return function(data)
+.tox/py27/lib/python2.7/site-packages/hypothesis/core.py:110: in run
+    return test(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+sets = [set([0])]
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_no_items_lost(sets):
+        union = lambda a, b: a.union(b)
+        all_input = reduce(union, sets, set())
+        all_output = reduce(union, reduce_sets(sets), set())
+&amp;gt;       assert all_input == all_output
+E       assert set([0]) == set([])
+E         Extra items in the left set:
+E         0
+E         Use -v to get the full diff
+
+tests/test_thing.py:24: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_no_items_lost(sets=[{0}])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Looks like our pruning strategy from before is removing valuable sets.  Let’s
+come up with a way to satisfy all the properties we’ve written so far:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[]:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;# create a set of the items found
+&lt;/span&gt;    &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;property-three-every-output-set-can-be-found-from-the-list-of-input-sets&quot;&gt;Property Three: Every output set can be found from the list of input sets&lt;/h2&gt;
+
+&lt;p&gt;This property basically is making sure no novel sets are created from our
+function.  We can implement this property like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_all_sets_come_from_input&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;forbidden_sets&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;forbidden_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;By running our tests, we can find a case that this fails on:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;sets = [set([0]), set([1])]
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_all_sets_come_from_input(sets):
+        output = reduce_sets(sets)
+        forbidden_sets = [s for s in output if s not in sets]
+&amp;gt;       assert len(forbidden_sets) == 0
+E       assert 1 == 0
+E        +  where 1 = len([set([0, 1])])
+
+tests/test_thing.py:31: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_all_sets_come_from_input(sets=[{0}, {1}])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;It’s clear why this is happening since our implementation is strictly creating
+a new superset from the sets its given.&lt;/p&gt;
+
+&lt;p&gt;Let’s come up with a new way to satisfy all the tests we’ve seen so far:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;objects&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;
+    get a list of objects without
+    the element at i
+    &quot;&quot;&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;objects&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[:&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;objects&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:]&lt;/span&gt;
+
+
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot; attempt to remove a single item &quot;&quot;&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;
+
+
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;one_removed&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;two_removed&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;one_removed&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;two_removed&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Our implementation just looks for items to safely remove, and removes them. I’m
+only doing this twice because I want only want to solve for the properties
+we’ve seen so far.&lt;/p&gt;
+
+&lt;p&gt;Note:  This implementation will break that first unit test we wrote.  To
+prevent this unit test from distracting us, let’s &lt;a href=&quot;http://pytest.org/latest/skipping.html#marking-a-test-function-to-be-skipped&quot;&gt;mark it for
+skipping&lt;/a&gt; so that pytest won’t run it.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;pytest&lt;/span&gt;
+
+&lt;span class=&quot;c1&quot;&gt;# ...
+&lt;/span&gt;
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pytest&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mark&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;skip&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;reason&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&apos;focusing on prop tests for now&apos;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_example&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;When you’re skipping a test, it shows up in the suite progress as the letter ‘s’:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 5 items
+
+tests/test_thing.py s....
+
+=============== 4 passed, 1 skipped in 1.12 seconds ===============
+_____________________________ summary _____________________________
+  py27: commands succeeded
+  congratulations :)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;property-four-there-are-no-duplicate-sets-in-the-output&quot;&gt;Property Four: There are no duplicate sets in the output.&lt;/h2&gt;
+
+&lt;p&gt;The previous solution removes duplicates, but now let’s write a property to
+make sure all duplicates are removed.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_no_duplicate_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e_ix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s_ix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e_ix&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s_ix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;continue&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;duplicate in {}&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;format&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Gives us:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;sets = [set([]), set([]), set([]), set([])]
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_no_duplicate_sets(sets):
+        output = reduce_sets(sets)
+        for e_ix, e in enumerate(output):
+            for s_ix, s in enumerate(output):
+                if e_ix == s_ix:
+                    continue
+&amp;gt;               assert e != s, &quot;duplicate in {}&quot;.format(output)
+E               AssertionError: duplicate in [set([]), set([])]
+E               assert set([]) != set([])
+
+tests/test_thing.py:41: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_no_duplicate_sets(sets=[set(), set(), set(), set()])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Looks like our code fails for inputs with many duplicate sets, which we can
+cover by just running the prune helper we wrote for as many times as there are
+sets passed in.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;n&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;range&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;property-five-no-set-in-the-output-list-is-a-subset-of-any-other-set-in-that-list&quot;&gt;Property Five: No set in the output list is a subset of any other set in that list.&lt;/h2&gt;
+
+&lt;p&gt;We ultimately want to remove anything we can from the list of sets passed in.
+Removing duplicates is a good, but we can do better than that because anything
+that is a subset of another set can also be tossed out.  By removing a subset,
+we will always have the same number of elements covered in our output.&lt;/p&gt;
+
+&lt;p&gt;Let’s write a property to look for sets that are subsets of others in the output.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_no_subsets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e_ix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s_ix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e_ix&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s_ix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;continue&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;issubset&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;subset found in {}&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;format&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And Hypothesis tells us:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;sets = [set([0]), set([])]
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_no_subsets(sets):
+        output = reduce_sets(sets)
+        for e_ix, e in enumerate(output):
+            for s_ix, s in enumerate(output):
+                if e_ix == s_ix:
+                    continue
+&amp;gt;               assert not e.issubset(s), &quot;subset found in {}&quot;.format(output)
+E               AssertionError: subset found in [set([0]), set([])]
+E               assert not True
+E                +  where True = &amp;lt;built-in method issubset of set object at 0x10cbab3f0&amp;gt;(set([0]))
+E                +    where &amp;lt;built-in method issubset of set object at 0x10cbab3f0&amp;gt; = set([]).issubset
+
+tests/test_thing.py:53: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_no_subsets(sets=[{0}, set()])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;We could solve this immediately with a one-line change, but I want to play with
+this failure case a bit first.  The empty set are subsets of all other sets, so
+let’s write a property especially for that.  Our function should never return
+anything with an empty set in it.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_no_empty_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;([])&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And to solve for it:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;([])]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;n&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;range&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Now we have a more interesting failure case on our original property:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;sets = [set([0]), set([0, 1])]
+
+    @h.given(st.lists(st.sets(st.integers())))
+    def test_no_subsets(sets):
+        output = reduce_sets(sets)
+        for e_ix, e in enumerate(output):
+            for s_ix, s in enumerate(output):
+                if e_ix == s_ix:
+                    continue
+&amp;gt;               assert not e.issubset(s), &quot;subset found in {}&quot;.format(output)
+E               AssertionError: subset found in [set([0]), set([0, 1])]
+E               assert not True
+E                +  where True = &amp;lt;built-in method issubset of set object at 0x1077de4d8&amp;gt;(set([0, 1]))
+E                +    where &amp;lt;built-in method issubset of set object at 0x1077de4d8&amp;gt; = set([0]).issubset
+
+tests/test_thing.py:59: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_no_subsets(sets=[{0}, {0, 1}])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;So we can see that &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;{0}&lt;/code&gt; is sneaking into our output even though element &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;0&lt;/code&gt; is
+covered by the set &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;{0, 1}&lt;/code&gt;.  Let’s tweak our pruning function to prune for
+elements that can find their superset.  This still satisfies the previous
+property because duplicate sets are both supersets and subsets of each other.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot; attempt to remove a single item &quot;&quot;&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;issuperset&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;  &lt;span class=&quot;c1&quot;&gt;# changed from &apos;s == e&apos;
+&lt;/span&gt;                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;
+
+
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;([])]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;n&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;range&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And now running our test suite again:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 7 items
+
+tests/test_thing.py s......
+
+=============== 6 passed, 1 skipped in 1.75 seconds ===============
+_____________________________ summary _____________________________
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Success! Everything passes!  We can even lift that &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;skip&lt;/code&gt; mark we added before.&lt;/p&gt;
+
+&lt;h2 id=&quot;property-six-no-output-set-is-a-subset-of-the-other-sets-combined&quot;&gt;Property Six: No output set is a subset of the other sets combined.&lt;/h2&gt;
+
+&lt;p&gt;This property is actually just a small extension of the previous one.  Checking
+to see if a set has a superset isn’t going far enough.  If our function had
+some sort of input data and it returned &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;[{1, 2}, {3, 4}, {2, 3}]&lt;/code&gt; you can tell
+that it’s incomplete because the set &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;{2, 3}&lt;/code&gt; can be covered from elements
+found in the other two sets.  Even though it isn’t a strict subset of either,
+it is redundant and safe-to-prune because all of its contents are found in
+other sets.&lt;/p&gt;
+
+&lt;p&gt;The implementation of this property looks like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;min_value&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;max_value&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;5&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;max_size&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;max_size&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_no_sibling_superset_cover_a_set_in_output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;union&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;lambda&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;without&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;lambda&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[:&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;+&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:]&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;siblings_superset&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;not&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;siblings_superset&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;issuperset&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And after multiple trials I finally got it to crash:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;sets = [set([0, 2]), set([0, 1]), set([1, 2])]
+
+    @h.given(st.lists(st.sets(st.integers(min_value=-1, max_value=5), max_size=3), max_size=8))
+    def test_no_sibling_superset_cover_a_set_in_output(sets):
+        union = lambda a, b: a.union(b)
+        without = lambda o, i: o[:i] + o[i+1:]
+        output = reduce_sets(sets)
+        for i, e in enumerate(output):
+            siblings_superset = reduce(union, without(output, i), set())
+&amp;gt;           assert not siblings_superset.issuperset(e)
+E           assert not True
+E            +  where True = &amp;lt;built-in method issuperset of set object at 0x1042cd878&amp;gt;(set([0, 2]))
+E            +    where &amp;lt;built-in method issuperset of set object at 0x1042cd878&amp;gt; = set([0, 1, 2]).issuperset
+
+tests/test_thing.py:68: AssertionError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_no_sibling_superset_cover_a_set_in_output(sets=[{0, 2}, {0, 1}, {1, 2}])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;The fix to this error is very similar to the last property we implemented.  We
+actually just have to check to make sure a given set is not a subset of all the
+other sets combined and it will have the same effect as if we were just
+checking the sibling sets individually. Because math.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;_union_all&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;lambda&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+
+
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot; attempt to remove a single item &quot;&quot;&quot;&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;enumerate&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_union_all&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;issuperset&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_without&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;
+
+
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;([])]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;n&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;range&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_prune_one&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And there we have it, one step closer to our set coverage.&lt;/p&gt;
+
+&lt;h2 id=&quot;property-seven-the-output-list-has-the-smallest-possible-number-of-sets&quot;&gt;Property Seven: The output list has the smallest possible number of sets&lt;/h2&gt;
+
+&lt;p&gt;This property is tricky, or at least tedious.  How do we prove that a list of
+sets is the smallest possible number of sets?  To show how our solution is
+incomplete, we have to come up with a specific failing test case:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_hard_coverage&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;
+        &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;   &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;   &lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt;
+        &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;   &lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;reduce_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;}]&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Another possible solution could be &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;[{1}, {2, 3}, {4}]&lt;/code&gt;, among others, but no
+solution is as small in length as the one in the test.&lt;/p&gt;
+
+&lt;p&gt;Running pytest with the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;-v&lt;/code&gt; flag, we can see a completely different solution
+was found.&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;$ tox -e py27 -- -v
+...
+============================ FAILURES =============================
+_______________________ test_hard_coverage ________________________
+
+    def test_hard_coverage():
+        s = [
+            {1,   2}, {3,   4},
+            {1}, {2,   3}, {4}
+        ]
+&amp;gt;       assert reduce_sets(s) == [{1, 2}, {3, 4}]
+E       assert [set([1]), se...3]), set([4])] == [set([1, 2]), set([3, 4])]
+E         At index 0 diff: set([1]) != set([1, 2])
+E         Left contains more items, first extra item: set([4])
+E         Full diff:
+E         - [set([1]), set([2, 3]), set([4])]
+E         + [set([1, 2]), set([3, 4])]
+
+tests/test_thing.py:75: AssertionError
+=============== 1 failed, 8 passed in 2.35 seconds ================
+ERROR: InvocationError: &apos;/Users/conrad/dev/set-coverage-example/.tox/py27/bin/py.test -v&apos;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Our code greedily converges on the wrong solution.  It finds something that
+satisfies all the other properties, but it isn’t the smallest solution
+possible.  The reason it fails is that it first considers the two sets &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;{1, 2}&lt;/code&gt;
+and &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;{3, 4}&lt;/code&gt; for removal.  Because the last 3 elements have all the elements of
+the first two, the two ideal sets get removed.&lt;/p&gt;
+
+&lt;p&gt;The only way to find an ideal solution would be to generate all possible
+solutions that satisfy the above properties, and then grab the smallest one.
+In other words, to implement the checker of this property, you have to
+implement set coverage yourself, which is the heart of what defines an
+&lt;a href=&quot;https://en.wikipedia.org/wiki/Reduction_(complexity)&quot;&gt;NP-Complete problem&lt;/a&gt;.  If you could implement the solution to this
+in polynomial time, you win Computer Science.  Every problem as hard as
+this one could be solved by your solution too.&lt;/p&gt;
+
+&lt;p&gt;So this is the one property I will not implement with Hypothesis.  It would
+have to be a strict reimplementation of the solution, maybe if there were more
+than one way to implement it we could validate that the two solutions are
+equivalent with &lt;a href=&quot;https://en.wikipedia.org/wiki/Heat_death_of_the_universe&quot;&gt;enough data&lt;/a&gt;, but for now a few pointed unit tests
+will have to do.&lt;/p&gt;
+
+&lt;p&gt;Here’s a pretty slow implementation of set coverage:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;itertools&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;combinations&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;chain&lt;/span&gt;
+
+&lt;span class=&quot;c1&quot;&gt;# ...
+&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;brute_force_set_coverage&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;s&quot;&gt;&quot;&quot;&quot;
+    most naiive approach to set coverage.
+
+    Try all solutions
+    Filter non-covering solutions
+    Choose smallest solution
+    &quot;&quot;&quot;&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;([])]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;goal_set&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_union_all&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;solution_generators&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;combinations&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;range&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;o&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))]&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;all_possible_solutions&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;chain&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;from_iterable&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;solution_generators&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;valid_solutions&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_possible_solutions&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;_union_all&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;goal_set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;list&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;sorted&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;valid_solutions&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;key&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;])&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;But before we can swap it out for tests, we have to adjust how our generators
+work.  Right now, this version will take a much longer time to find a solution
+as the list of sets grows in size, so lets put a hard limit on how big sets get.&lt;/p&gt;
+
+&lt;p&gt;First let’s refactor our hypothesis generators to source from the same function:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;list_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()))&lt;/span&gt;
+
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;list_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_that_output_has_fewer_sets_than_input&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;brute_force_set_coverage&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;list_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_no_items_lost&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;union&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;lambda&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;b&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;all_input&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;all_output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;reduce&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;union&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;brute_force_set_coverage&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_input&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_output&lt;/span&gt;
+
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And then put some limitations on the size of the lists and sets that get
+generated by this generator.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;list_of_sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sets&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;max_value&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;max_size&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;8&lt;/span&gt;
+        &lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;max_size&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;16&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Even by limiting it to these small numbers, the entire test suite can take
+several seconds longer than it was before:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;======================= test session starts =======================
+platform darwin -- Python 2.7.10, pytest-2.9.2, py-1.4.31, pluggy-0.3.1
+rootdir: /Users/conrad/dev/set-coverage-example, inifile:
+plugins: hypothesis-3.4.1
+collected 9 items
+
+tests/test_thing.py .........
+
+==================== 9 passed in 8.99 seconds =====================
+_____________________________ summary _____________________________
+  py27: commands succeeded
+  congratulations :)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;To view all the code from this post, you can find it on &lt;a href=&quot;https://github.com/cpdean/set-coverage-example&quot;&gt;Github&lt;/a&gt;.&lt;/p&gt;
+
+</description>
+        <pubDate>Sun, 24 Jul 2016 11:40:09 -0400</pubDate>
+        <link>http://blog.conradpdean.com/2016/07/24/set-coverage-hypothesis.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2016/07/24/set-coverage-hypothesis.html</guid>
+        
+        
+      </item>
+    
+      <item>
+        <title>Practical Property Testing</title>
+        <description>&lt;p&gt;&lt;a href=&quot;http://hypothesis.readthedocs.io/en/latest/quickstart.html&quot;&gt;Hypothesis&lt;/a&gt; is a property-based testing framework.  This means
+that it will generate test cases for you as long as you tell it what kind of
+data to generate, and you write tests that can generalize solutions against
+novel data.  But how do you get started with a tool like this?&lt;/p&gt;
+
+&lt;p&gt;How to come up with your own properties is a challenge, but there are a few patterns that are immediately useful in the software that people work on in the real world.  I learned about these patterns from Matt Bachmann’s &lt;a href=&quot;https://youtu.be/jvwfDdgg93E&quot;&gt;Pycon 2016 talk&lt;/a&gt;.&lt;/p&gt;
+
+&lt;p&gt;The term “property” comes from Math.  For example, we say that a list-sorting
+function has the property of idempotence.  That means that if you run the
+function many times, it won’t have any different outcomes from just running it
+once.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;():&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;random_list&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)))&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))))&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is an awfully academic way to think about your code, and you shouldn’t be
+surprised by that.  Hypothesis is based off another project: QuickCheck,  from
+Haskell.&lt;/p&gt;
+
+&lt;p&gt;Just because their premise is based on abstract mathematical properties doesn’t
+mean you need to understand how to write a formal proof about your code.
+Coming up with your own tests is easy.  Instead of coming up with specific test
+cases with hard-coded input and output data, you come up with a test that
+describes the general shape of the behavior of your code.  When you do that,
+the property-test framework can generate data for you and use your test to
+verify that your code is doing what it should be.  When you describe &lt;strong&gt;how&lt;/strong&gt;
+the output should be, rather than &lt;strong&gt;what&lt;/strong&gt; it should be, your test will work on
+data you haven’t thought of before!&lt;/p&gt;
+
+&lt;p&gt;Still, property tests are far more challenging to write than unit tests.  The
+properties that you implement during testing are not the same properties that
+come up during feature requests from users – nobody is asking for you to make
+sure your implementation of quick-sort is idempotent! But there are a few
+properties that are immediately useful to you to start using Hypothesis in your
+codebase right away.&lt;/p&gt;
+
+&lt;h2 id=&quot;oracle-based-property&quot;&gt;Oracle-based property&lt;/h2&gt;
+
+&lt;p&gt;Something that all property tests have in common is it asserts some kind of
+behavior about your code.  Often the property test only describe one aspect
+about the behavior of what’s being tested, but this pattern asserts everything about what data it should return at once.&lt;/p&gt;
+
+&lt;p&gt;Say you have a function that’s too slow, or written poorly, or you want to
+write it in a different language.  Before embarking on a complete rewrite, it’s
+important to have a bunch of tests around that function to make sure that you
+don’t accidentally make a mistake and change its behavior from what it should
+do.  Writing out all those tests is time consuming, why not just have
+Hypothesis test it for you?&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis.strategies&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;
+
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;project.legacy&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;fix_data&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;old_fix_data&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;project&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;fix_data&lt;/span&gt;
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_new_data_fixer&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;x&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;fix_data&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;x&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;old_fix_data&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;x&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Hypothesis will generate random integers and check to make sure the new
+implementation fixes the data correctly.  This is a cheap and easy way to
+verify your implementation across many test cases.  While it helps to have a
+few pointed edge cases that make sense in your problem domain, having a
+computer generate thousands of test cases for you may uncover differences in
+the rewrite that could have been bugs in the legacy code to begin with!  It’s
+like having users that always reports concrete ways to reproduce a bug.&lt;/p&gt;
+
+&lt;h2 id=&quot;reversible-operations&quot;&gt;Reversible Operations&lt;/h2&gt;
+
+&lt;p&gt;You get a property test for free whenever you have two functions that are
+supposed to undo each other.  Serialization and deserialization of data is a
+common function where this happens:&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis.strategies&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;json_data&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;recursive&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;booleans&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;text&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;none&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(),&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;lambda&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;children&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;children&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;dictionaries&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;text&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;children&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;json&lt;/span&gt;
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;json_data&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_json_serialization&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;data&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;data&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;json&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;loads&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;json&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;dumps&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;data&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This asserts that serializing data back and forth from json works correctly.
+Notice that we aren’t specifying any specific test case of data because we
+shouldn’t have to. &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;json.loads&lt;/code&gt; and &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;json.dumps&lt;/code&gt; are supposed to reverse what
+each other do by definition, so it makes sense that we should be able to use
+any sort of data that’s allowed to be stored as JSON.&lt;/p&gt;
+
+&lt;p&gt;This generator is making use of the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;recursive&lt;/code&gt; strategy from hypothesis to
+generate nested data.  I pulled the example from the &lt;a href=&quot;http://hypothesis.readthedocs.io/en/latest/data.html#recursive-data&quot;&gt;hypothesis
+documentation&lt;/a&gt;.&lt;/p&gt;
+
+&lt;p&gt;Note that the documentation uses &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;st.floats()&lt;/code&gt; where I’m using &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;st.integers()&lt;/code&gt;.
+This is because the float &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;nan&lt;/code&gt; serializes back to the string &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;&quot;NaN&quot;&lt;/code&gt;, which
+hypothesis points out as an error.  Maybe this highlights a problem with the
+JSON spec, or with python’s standard library json module.  Either way, outside
+the scope of what I want to talk about right now.&lt;/p&gt;
+
+&lt;h2 id=&quot;fuzzing-for-failure&quot;&gt;Fuzzing for Failure&lt;/h2&gt;
+
+&lt;p&gt;A common property of software that you usually want to have is that it doesn’t
+crash.  It’s surprising how rare a property this is.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;datetime&lt;/span&gt;
+
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_epoch_to_datetime&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;ts&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;datetime&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;datetime&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;fromtimestamp&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;ts&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is testing a function that takes the number of seconds since January 1st,
+1970 and returns a datetime object for that point in time.  This test isn’t
+asserting anything about the behavior of this function at all, it’s not even
+looking at the datetime that it returns.  Why even bother? However when we run
+our test:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;============================ FAILURES =============================
+_____________________ test_epoch_to_datetime ______________________
+
+    @h.given(st.integers())
+&amp;gt;   def test_epoch_to_datetime(ts):
+
+tests/test_thing.py:104:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.tox/py3/lib/python2.7/site-packages/hypothesis/core.py:520: in wrapped_test
+    print_example=True, is_final=True
+.tox/py3/lib/python2.7/site-packages/hypothesis/executors.py:58: in default_new_style_executor
+    return function(data)
+.tox/py3/lib/python2.7/site-packages/hypothesis/core.py:110: in run
+    return test(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+ts = 253402318800
+
+    @h.given(st.integers())
+    def test_epoch_to_datetime(ts):
+&amp;gt;       datetime.datetime.fromtimestamp(ts)
+E       ValueError: year is out of range
+
+tests/test_thing.py:105: ValueError
+--------------------------- Hypothesis ----------------------------
+Falsifying example: test_epoch_to_datetime(ts=253402318800)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;fromtimestamp&lt;/code&gt; is crashing! Why is there a number that this would crash on? Looking at the &lt;a href=&quot;https://docs.python.org/2/library/datetime.html#datetime.date.fromtimestamp&quot;&gt;documentation&lt;/a&gt; for this function:&lt;/p&gt;
+
+&lt;blockquote&gt;
+  &lt;p&gt;… This may raise ValueError, if the timestamp is out of the range of values supported by the platform C localtime() function. It’s common for this to be restricted to years from 1970 through 2038. …&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;So what year does this integer represent?&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Python 3.4.3 (default, Aug 11 2015, 08:53:29)
+[GCC 4.2.1 Compatible Apple LLVM 6.0 (clang-600.0.57)] on darwin
+Type &quot;help&quot;, &quot;copyright&quot;, &quot;credits&quot; or &quot;license&quot; for more information.
+&amp;gt;&amp;gt;&amp;gt; ts = 253402318800
+&amp;gt;&amp;gt;&amp;gt; (ts
+... / 60 # seconds in a minute
+... / 60 # minutes in an hour
+... / 24 # hours in a day
+... / 365 # days a year
+... ) + 1970 # since epoch year
+10005.334817351599
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Ah.  Yeah that’s a bit over 2038.  But the documentation says “it’s common for
+this to be restricted…”  meaning it will be different depending on what the
+platform supports.  Depending on the kind of software you’re writing and
+deploying, it would make sense to test for this on every platform you support.
+Do you know all instances where your codebase calls &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;datetime.fromtimestamp&lt;/code&gt;?
+Do you know all instances where the libraries you use call
+&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;datetime.fromtimestamp&lt;/code&gt;?&lt;/p&gt;
+
+&lt;p&gt;Fuzzing your components for failure can uncover all sorts of unexpected errors
+like this without much effort on your part.  You don’t have to know where you
+use functions that have arbitrary limits like this.  Just let the computer
+search for them and save you the trouble.&lt;/p&gt;
+
+&lt;h2 id=&quot;start-using-property-tests-now&quot;&gt;Start Using Property Tests Now&lt;/h2&gt;
+
+&lt;p&gt;&lt;a href=&quot;http://hypothesis.readthedocs.io/en/latest/quickstart.html&quot;&gt;Hypothesis&lt;/a&gt; supports &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;pytest&lt;/code&gt; and &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;unittest&lt;/code&gt; already, and using
+some of the patterns above it’s easy to begin incorporating property tests into
+your project right away.  The more familiar you’ll get with how to apply these
+basic patterns, the sooner you’ll learn how to come up with novel patterns on
+your own code.&lt;/p&gt;
+
+</description>
+        <pubDate>Wed, 13 Jul 2016 22:26:13 -0400</pubDate>
+        <link>http://blog.conradpdean.com/2016/07/13/practical-property-testing.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2016/07/13/practical-property-testing.html</guid>
+        
+        <category>tools,</category>
+        
+        <category>hypothesis,</category>
+        
+        <category>python,</category>
+        
+        <category>tests,</category>
+        
+        <category>testing</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>You&apos;re Writing the Wrong Tests</title>
+        <description>&lt;p&gt;Testing is important.  Testing is boring. Coming up with test cases on your own is a problem because you have to think of many specific examples.  This is tedious, and your examples sometimes may not cover interesting corner cases.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;c1&quot;&gt;# ...
+&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;pytest&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mark&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;parametrize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;to_sort, expected&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;([&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;],&lt;/span&gt;       &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]),&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;([&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;],&lt;/span&gt;    &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]),&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;([&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;],&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;2&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;3&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;4&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]),&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;])&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_eval&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;to_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;expected&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;to_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;expected&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;There’s a pattern in these test cases.  They’re all reverse-sorted lists.
+There are many test cases here, but they all have the same shape because I was
+bored.  What if my sort was just implemented as a &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;reverse()&lt;/code&gt; ?  It’d pass on
+this output, but would break on shuffled lists.  What if my implementation
+crashed on empty lists?  What if my implementation messed up on already sorted
+lists?&lt;/p&gt;
+
+&lt;p&gt;I have to think about those weird corner cases and check them.&lt;/p&gt;
+
+&lt;p&gt;Property testing’s value comes in two forms.&lt;/p&gt;
+
+&lt;h3 id=&quot;less-is-more&quot;&gt;Less is More&lt;/h3&gt;
+
+&lt;p&gt;The obvious one is you get these boring test cases generated for you for free.
+Hundreds of them. Thousands of them if you look up the &lt;a href=&quot;http://hypothesis.readthedocs.io/en/latest/settings.html#hypothesis.settings.max_examples&quot;&gt;config
+variable&lt;/a&gt; to set.  Millions of them if you are paranoid and want
+to make your computer warm up.  Billions of them if you’re looking for an
+excuse to not do work for the next several hours.  Trillions of them if you’d
+rather welcome the heat-death of the universe than see another incomplete bug
+report with no instruction as to how you could reproduce it.&lt;/p&gt;
+
+&lt;h3 id=&quot;you-get-better-understanding-of-the-problem-youre-solving&quot;&gt;You Get Better Understanding of the Problem You’re Solving&lt;/h3&gt;
+
+&lt;p&gt;The really interesting benefit from property testing is how to better formalize
+your definition of the problem. What’s the one common thing in all of the
+expected output of the sort function?  What does it mean for a list to be
+sorted?  In unit tests you state concretely what the data should be coming out,
+but nothing is said about why it’s correct.  If one of my test cases is just
+wrong, but the others are right, it would take deliberate effort to inspect
+that case and correct that mistake. But coming up with an “it is sorted”
+property will hold for all test cases generated.&lt;/p&gt;
+
+&lt;div class=&quot;language-python highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;c1&quot;&gt;# the property
+&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;it_is_sorted&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;nb&quot;&gt;range&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;a&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]:&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;False&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;bp&quot;&gt;True&lt;/span&gt;
+
+&lt;span class=&quot;c1&quot;&gt;# the test
+&lt;/span&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;hypothesis.strategies&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;
+
+&lt;span class=&quot;o&quot;&gt;@&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;given&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;lists&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;st&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;integers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()))&lt;/span&gt;
+&lt;span class=&quot;k&quot;&gt;def&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;test_eval&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;numbers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;assert&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;it_is_sorted&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;my_sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;numbers&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Once you define a property that describes the shape of the solution your code
+should generate, you’re free to let &lt;a href=&quot;http://hypothesis.works/&quot;&gt;Hypothesis&lt;/a&gt; handle the rest.
+Not only you save yourself the tedium of coming up with your own test cases,
+but now your test suite is better at describing what you want your code to be
+doing.&lt;/p&gt;
+
+</description>
+        <pubDate>Sat, 09 Jul 2016 22:11:44 -0400</pubDate>
+        <link>http://blog.conradpdean.com/2016/07/09/youre-writing-the-wrong-tests.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/2016/07/09/youre-writing-the-wrong-tests.html</guid>
+        
+        <category>tools,</category>
+        
+        <category>hypothesis,</category>
+        
+        <category>python,</category>
+        
+        <category>tests,</category>
+        
+        <category>testing</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Static Sites</title>
+        <description>&lt;p&gt;Whenever I try to get started on a personal project, I spend about 90 percent
+of the time looking up stuff on what tools to use and the remaining 10 percent
+goes to not working on the project.&lt;/p&gt;
+
+&lt;p&gt;I’ve wanted to work on a personal site for a while.  This time I’m going to try
+out using jekyll.  I had played around with pelican in the past, but there
+feels like too much of a learning curve to get started with all of the plugin
+hooks and configuration with getting your theme up and running.  Something that
+really appeals to me about jekyll is how the fact that it doesn’t have any of
+those features means I have nothing additional to learn.  Just another template
+language I can putz around with and go.&lt;/p&gt;
+
+&lt;p&gt;The only example of an engineer that I admire who uses pelican is &lt;a href=&quot;https://eev.ee/blog/&quot;&gt;eevee’s
+Fuzzy Notepad&lt;/a&gt;, and I couldn’t figure out how to setup their blog
+locally.&lt;/p&gt;
+
+&lt;p&gt;Comparing the two tools, pelican requires a lot of extra stuff you need to read
+about, and the templates require you plug in all these configuration variables
+all over the place.  Maybe that makes it easier to swap between themes if
+you’re structuring your site in a way to source things dynamically, but then it
+requires you learn what those dynamic portions are.  In jekyll it looks like
+you just do what you want right in the template.  That feels way clearer to me.&lt;/p&gt;
+
+&lt;p&gt;Maybe I’ll be shooting myself in the foot using something like this, because it
+may make it harder to migrate to a new platform or a new visual theme, but for
+now getting started is more important than having something future-proof.&lt;/p&gt;
+
+&lt;h2 id=&quot;how-to-do-your-own-site&quot;&gt;How to do your own site&lt;/h2&gt;
+
+&lt;p&gt;The two big decisions you have to make are what static site generator to use
+and how you want to host your site.&lt;/p&gt;
+
+&lt;p&gt;For now I’m trying out &lt;a href=&quot;https://jekyllrb.com/&quot;&gt;Jekyll&lt;/a&gt; for generating the site,
+S3 for my host, and &lt;a href=&quot;https://nearlyfreespeech.net&quot;&gt;NearlyFreeSpeech&lt;/a&gt; for my
+domain/DNS.&lt;/p&gt;
+
+&lt;h3 id=&quot;make-the-site&quot;&gt;Make the site&lt;/h3&gt;
+
+&lt;p&gt;This isn’t a web development tutorial, so:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;jekyll new mysite
+cd mysite
+jekyll serve
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And look, open up your browser at
+&lt;a href=&quot;http://127.0.0.1:4000/&quot;&gt;http://127.0.0.1:4000/&lt;/a&gt;, you have a site!&lt;/p&gt;
+
+&lt;p&gt;Jekyll builds your site on every file change and saves your website to the
+folder &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;_site&lt;/code&gt;.  These are what you’ll put on your web host so others can view
+your stuff.&lt;/p&gt;
+
+&lt;h3 id=&quot;setup-web-hosting&quot;&gt;Setup web hosting&lt;/h3&gt;
+
+&lt;p&gt;I have the domain name &lt;a href=&quot;http://conradpdean.com&quot;&gt;conradpdean.com&lt;/a&gt;, and I want to
+host my blog at &lt;a href=&quot;http://blog.conradpdean.com&quot;&gt;blog.conradpdean.com&lt;/a&gt;, so in AWS
+that is the name of the bucket I need to make.&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/static-sites/create-bucket.png&quot; alt=&quot;click on &apos;Create Bucket&apos;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Setup Bucket Permissions&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;By default, S3 prevents everyone from being able to look at your stuff.  That’s
+a nice, secure default in general, but you probably want other people to be
+able to look at your site.  You’ll need to open up the bucket permissions by
+going through  &lt;strong&gt;Properties -&amp;gt; Permissions -&amp;gt; Edit bucket policy&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/static-sites/permissions.png&quot; alt=&quot;open permissions&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;This will give you a text box to configure the permissions of your s3 bucket
+directly with a json document.  Here’s what you do to enable read access to
+everyone on all files in the bucket:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;{
+    &quot;Version&quot;: &quot;2012-10-17&quot;,
+    &quot;Statement&quot;: [
+        {
+            &quot;Sid&quot;: &quot;PublicReadGetObject&quot;,
+            &quot;Effect&quot;: &quot;Allow&quot;,
+            &quot;Principal&quot;: {
+                &quot;AWS&quot;: &quot;*&quot;
+            },
+            &quot;Action&quot;: &quot;s3:GetObject&quot;,
+            &quot;Resource&quot;: &quot;arn:aws:s3:::blog.conradpdean.com/*&quot;
+        }
+    ]
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Change the bucket name from &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;blog.conradpdean.com&lt;/code&gt; to the bucket name that you
+chose instead.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Enable Web Hosting&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;On this screen you just have to enable website hosting.  Click on the &lt;strong&gt;Static
+Web Hosting&lt;/strong&gt; heading, enable that feature and configure it to use a couple of
+files for the default index page and the file to use for 404 errors.&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/static-sites/enable-static-hosting.png&quot; alt=&quot;enable static hosting from the bucket&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Notice that this dialog is telling us we can access our site at the endpoint
+&lt;a href=&quot;http://blog.conradpdean.com.s3-website-us-east-1.amazonaws.com&quot;&gt;blog.conradpdean.com.s3-website-us-east-1.amazonaws.com&lt;/a&gt;.
+This is the address we will use when pointing our domain name to S3 later.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Fix error-handling&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;We don’t currently have a &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;404.html&lt;/code&gt; page in our project, so let’s add one.&lt;/p&gt;
+
+&lt;p&gt;We need to make a page to show users when they go to the wrong url on our
+static site. Make a file &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;404.html&lt;/code&gt; that has this in it:&lt;/p&gt;
+
+&lt;div class=&quot;language-html highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;---
+layout: default
+permalink: /404.html
+---
+
+&lt;span class=&quot;nt&quot;&gt;&amp;lt;div&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;class=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;home&quot;&lt;/span&gt;&lt;span class=&quot;nt&quot;&gt;&amp;gt;&lt;/span&gt;
+
+  &lt;span class=&quot;nt&quot;&gt;&amp;lt;h1&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;class=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;page-heading&quot;&lt;/span&gt;&lt;span class=&quot;nt&quot;&gt;&amp;gt;&lt;/span&gt;404 - Page not found&lt;span class=&quot;nt&quot;&gt;&amp;lt;/h1&amp;gt;&lt;/span&gt;
+  &lt;span class=&quot;nt&quot;&gt;&amp;lt;p&amp;gt;&lt;/span&gt;
+      Sorry -- there aren&apos;t any pages with that address here.
+  &lt;span class=&quot;nt&quot;&gt;&amp;lt;/p&amp;gt;&lt;/span&gt;
+
+&lt;span class=&quot;nt&quot;&gt;&amp;lt;/div&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;This is just plain old HTML with a &lt;a href=&quot;http://jekyllrb.com/docs/frontmatter/&quot;&gt;YAML
+frontmatter&lt;/a&gt; at the top. The frontmatter
+is something you put at the top of every text file with some configuration
+variables set that let Jekyll know what to do with it when your site is
+generated. The variable &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;layout&lt;/code&gt; is set to &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;default&lt;/code&gt;, meaning Jekyll should use
+the file &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;_layouts/default.html&lt;/code&gt; to render this file.  Using layout files like
+this make sure that every page in your site has a consistent cohesive look, and
+also it helps you from needing to duplicate common parts of your site
+everywhere like the headers and footers.  The &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;permalink&lt;/code&gt; variable is set to
+&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;/404.html&lt;/code&gt;, meaning Jekyll should save the generated 404 page to the root of
+your generated site with the name &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;404.html&lt;/code&gt;.  This is what we’ve told S3 to
+use as the error document, and in other web hosts like Github Pages and Gitlab
+Pages the file with this name is used by default through their conventions.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Publish Your Site&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;I just have a script in my project that builds and publishes my site all at
+once.  You’ll need to install awscli to use it:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;pip install awscli
+aws configure
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;And my script looks like this:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;jekyll build -d _published_site
+aws s3 sync _published_site s3://blog.conradpdean.com/
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;It tells Jekyll to build the site and save the generated output to the folder
+&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;_published_site&lt;/code&gt; and then synchronizes that folder with my s3 bucket.&lt;/p&gt;
+
+&lt;p&gt;Jekyll automatically clears out the destination folder &lt;a href=&quot;https://jekyllrb.com/docs/usage/&quot;&gt;on every
+build&lt;/a&gt; to make sure old files not overwritten
+do not make their way into the published site.&lt;/p&gt;
+
+&lt;p&gt;&lt;strong&gt;Setup Your Domain Name&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;Now all that’s left is to configure your domain to point to S3.  Every domain
+hosting service is different, but look for how you can add DNS records. Add a
+&lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;CNAME&lt;/code&gt; record to point the subdomain you’ve chosen to the public address to
+your bucket.  The public address can be found in the dialog we used to enable
+static web hosting above, but the address will be in the format of:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&amp;lt;BUCKET NAME&amp;gt;.s3-website-&amp;lt;AWS REGION NAME&amp;gt;.amazonaws.com
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;For me, because the name of my bucket is &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;blog.conradpdean.com&lt;/code&gt; and I picked
+the US standard region, the endpoint is:&lt;/p&gt;
+
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;blog.conradpdean.com.s3-website-us-east-1.amazonaws.com
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Once you add the &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;CNAME&lt;/code&gt; DNS record to point to this name, you should be able
+to view your site!&lt;/p&gt;
+
+&lt;h2 id=&quot;what-now&quot;&gt;What Now?&lt;/h2&gt;
+
+&lt;p&gt;S3 is fine as a cheap web host, but it comes with some limitations.  For one,
+there is a monthly cap of 20 thousand GET requests.  This means if you have a
+blog post that needs 10 files (the page, css files, images, font files, etc)
+then you could only serve the page two thousand times before needing to pay for
+the bandwidth. Also, your site will only be served from a single region, so
+users outside of that region will experience slower page loads.&lt;/p&gt;
+
+&lt;p&gt;To fix that problem, setup a CDN like cloudfront or cloudflare to reduce the
+strain on your AWS usage.&lt;/p&gt;
+
+&lt;p&gt;Additionally, you should setup SSL so your reader’s privacy is maintained.&lt;/p&gt;
+
+&lt;p&gt;Both setting up a CDN and SSL are covered
+&lt;a href=&quot;https://bryce.fisher-fleig.org/blog/setting-up-ssl-on-aws-cloudfront-and-s3/&quot;&gt;here&lt;/a&gt;.&lt;/p&gt;
+
+</description>
+        <pubDate>Wed, 06 Jul 2016 06:56:44 -0400</pubDate>
+        <link>http://blog.conradpdean.com/tools/2016/07/06/static-sites.html</link>
+        <guid isPermaLink="true">http://blog.conradpdean.com/tools/2016/07/06/static-sites.html</guid>
+        
+        
+        <category>tools</category>
+        
+      </item>
+    
+  </channel>
+</rss>
