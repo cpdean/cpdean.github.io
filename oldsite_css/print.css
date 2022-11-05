@@ -1,0 +1,288 @@
+@import url(http://fonts.googleapis.com/css?family=Quattrocento:400,700|Open+Sans:300,400);
+nav
+{
+    display: none;
+}
+
+nav ul
+{
+    margin:0px;
+    padding:0px;
+    font-size: 1.5em;
+} 
+
+nav ul li
+{
+    margin:0px;
+    list-style-type:none;
+}
+
+nav ul li a
+{
+    text-decoration:none;
+    font-weight:bold;
+    font-family:sans-serif;
+    background:black;
+    color:white;
+    padding: .5em .2em .5em 0em;
+    margin-bottom: .2em;
+}
+
+section#container
+{
+    width: 70%;
+    min-height: 13em;
+    margin-top: 8em;
+    margin-left: auto;
+    margin-right: auto;
+    position:relative;
+    animation: enter 1s;
+    -webkit-animation: enter 1s;
+    -moz-animation: enter 1s;
+}
+
+/* Simple entry animation for section#container */
+/* <animation-stuff> */
+@keyframes enter
+{
+    0%
+    {
+        top:-20em;
+    }
+
+    70%
+    {
+        top:-20em;
+    }
+
+    90%
+    {
+        top:0em;
+    }
+}
+
+@-webkit-keyframes enter
+{
+    0%
+    {
+        top:-20em;
+    }
+
+    70%
+    {
+        top:-20em;
+    }
+
+    90%
+    {
+        top:0em;
+    }
+}
+
+@-moz-keyframes enter
+{
+    0%
+    {
+        top:-20em;
+    }
+
+    70%
+    {
+        top:-20em;
+    }
+
+    90%
+    {
+        top:0em;
+    }
+}
+/* </animation-stuff> */
+
+
+
+h1#name, h3#slogan
+{
+    text-align: center;
+    line-height: .8em;
+    margin: 0px;
+    padding: 0px;
+    color: #101045;
+}
+
+h1#name
+{
+    display:span;
+    font-size: 5em;
+    letter-spacing: 3px;
+    border-bottom: 3px solid #000035;
+    vertical-align: middle;
+}
+
+h3#slogan
+{
+    font-size: 2em;
+}
+
+#container:hover > p#contact
+{
+    color:#f00;
+    -webkit-transition: color .7s;
+    -moz-transition: color .7s;
+    transition: color .7s;
+}
+
+#container > p#contact
+{
+    color:#f77;
+    -webkit-transition: color .7s linear;
+    -moz-transition: color .7s linear;
+    transition: color .7s linear;
+}
+
+p#contact
+{
+    //text-align:right;
+    float:right;
+
+}
+p
+{
+    display:inline;
+    margin:0px;
+    padding:0px;
+}
+
+a
+{
+    text-decoration:none;
+    color:#f77;
+}
+
+a:hover
+{
+    color:#faa;
+}
+
+h1#fourOHfour,
+h1,
+h2
+{
+    text-align:center;
+    line-height: 1em;
+}
+
+h1#fourOHfour
+{
+    font-size: 10em;
+    line-height: .50em;
+    margin-top: 1em;
+    margin-bottom: .2em;
+}
+
+h1
+{
+    font-size: 4em;
+}
+
+h2
+{
+    font-size: 2em;
+}
+
+/* resume specifics */
+#resume
+{
+    width: 100%;
+    font-size: 1em;
+    font-size: 10px;
+    overflow: visible;
+}
+
+#header #name
+{
+    font-family:'Open Sans',sans-serif;
+    font-weight:bold;
+    font-size: 8em;
+    line-height: .9;
+    display: block;
+    border-bottom: solid black 5px;
+}
+
+#header #contact
+{
+    display:block;
+    text-align:right;
+    font-size: 1.6em;
+}
+#address
+{
+    white-space: pre;
+}
+
+
+.content_section
+{
+    margin-bottom: 5em;
+    width: 100%;
+}
+
+.content_section header
+{
+    font-family: 'open sans',arial,sans-serif;
+    font-weight: 100;
+    /* line-height: 100%; */
+    font-size: 3em;
+    /* width: 30%; */
+    /* height:auto; */
+    /* text-align: right; */
+    padding-right: .39em;
+    /* display: inline-block; */
+    vertical-align: top;
+}
+
+.content_body
+{
+    /* width: 66%; */
+    /* display:inline-block; */
+    margin-top: .35em;
+    padding-bottom 1em;
+    padding-left: .5em;
+    min-height: 1.95em;
+    font-size: 1.6em;
+    font-family: 'Quattrocento',serif;
+    color: #222;
+}
+
+ul
+{
+    margin-top: .2em;
+}
+
+.item
+{
+    margin-bottom: 2em;
+}
+
+#job_experience .item,
+#projects .item
+{
+    margin-bottom: 2em;
+}
+
+.item_heading
+{
+    page-break-before: always;
+    font-weight: bold;
+    
+}
+
+.item .time
+{
+    float: right;
+}
+
+.hidden
+{
+    display: none;
+}
+
